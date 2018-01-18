@@ -1,0 +1,11 @@
+# PyCharm
+.idea/
+
+# datasets
+data/
+
+# python compiled
+*.pyc
+
+# ignored
+temp.py
