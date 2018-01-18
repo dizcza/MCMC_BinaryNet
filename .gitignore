@@ -4,6 +4,9 @@
 # datasets
 data/
 
+# binary models
+models_bin/
+
 # python compiled
 *.pyc
 
