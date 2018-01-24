@@ -118,10 +118,11 @@ class Trainer(object):
                     batch_accuracy = get_softmax_accuracy(outputs, labels)
                     print('Epoch [%d/%d], Step [%d/%d], Loss: %.4f, Batch accuracy: %.4f' % (
                         epoch, n_epoch, batch_id, len(train_loader), loss.data[0], batch_accuracy))
-            accuracy = calc_accuracy(self.model, train_loader)
-            if accuracy > best_accuracy:
-                best_accuracy = accuracy
-                self.save_model()
+            if not debug:
+                accuracy = calc_accuracy(self.model, train_loader)
+                if accuracy > best_accuracy:
+                    best_accuracy = accuracy
+                    self.save_model()
 
 
 def test():
