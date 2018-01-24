@@ -1,8 +1,10 @@
 import os
 import torch
+import torch.nn as nn
 import torch.utils.data
 from torch.autograd import Variable
 from torchvision import transforms, datasets
+from typing import Union
 
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "models_bin")
 
@@ -17,16 +19,22 @@ def get_data_loader(train=True, batch_size=32):
     return loader
 
 
-def calc_accuracy(model, loader):
+def calc_accuracy(model: nn.Module, loader: torch.utils.data.DataLoader):
     if model is None:
         return 0.0
     correct_count = 0
     total_count = 0
     mode_saved = model.training
     model.train(False)
+    use_cuda = torch.cuda.is_available()
+    if use_cuda:
+        model.cuda()
     for batch_id, (images, labels) in enumerate(iter(loader)):
+        if use_cuda:
+            images = images.cuda()
+            labels = labels.cuda()
         total_count += len(labels)
-        outputs = model(Variable(images))
+        outputs = model(Variable(images, volatile=True))
         _, labels_predicted = torch.max(outputs.data, 1)
         correct_count += torch.sum(labels_predicted == labels)
     model.train(mode_saved)
@@ -53,14 +61,14 @@ class StepLRClamp(torch.optim.lr_scheduler.StepLR):
 
 class Trainer(object):
 
-    def __init__(self, model, criterion, optimizer, scheduler=None):
+    def __init__(self, model: nn.Module, criterion: nn.Module, optimizer: torch.optim.Optimizer, scheduler=None):
         self.model = model
         self.criterion = criterion
         self.optimizer = optimizer
         self.scheduler = scheduler
 
     @staticmethod
-    def load_model(model_name):
+    def load_model(model_name) -> Union[nn.Module, None]:
         model_path = os.path.join(MODELS_DIR, model_name + '.pt')
         if os.path.exists(model_path):
             return torch.load(model_path)
@@ -78,7 +86,11 @@ class Trainer(object):
         train_loader = get_data_loader(train=True)
         log_step = len(train_loader) // 10
         loaded_model = self.load_model(str(self.model))
-        best_accuracy = calc_accuracy(loaded_model, train_loader)
+        use_cuda = torch.cuda.is_available()
+        if use_cuda:
+            self.model.cuda()
+        # best_accuracy = calc_accuracy(loaded_model, train_loader)
+        best_accuracy = 0
         dataset_name = type(train_loader.dataset).__name__
         print("Training '{}'. Best {} train accuracy so far: {:.4f}".format(
             str(self.model), dataset_name, best_accuracy))
@@ -88,12 +100,17 @@ class Trainer(object):
             for batch_id, (images, labels) in enumerate(train_loader):
                 images = Variable(images)
                 labels = Variable(labels)
+                if use_cuda:
+                    images = images.cuda()
+                    labels = labels.cuda()
 
                 self.optimizer.zero_grad()
                 outputs = self.model(images)
                 loss = self.criterion(outputs, labels)
                 loss.backward()
                 self.optimizer.step()
+                for param_binary in self.model.parameters_binary():
+                    param_binary.data.clamp_(min=-1, max=1)
 
                 if batch_id % log_step == 0:
                     batch_accuracy = get_softmax_accuracy(outputs, labels)

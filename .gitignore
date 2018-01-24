@@ -10,5 +10,5 @@ models_bin/
 # python compiled
 *.pyc
 
-# ignored
-temp.py
+# ignored files
+ignored/
