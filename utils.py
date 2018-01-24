@@ -82,15 +82,17 @@ class Trainer(object):
         torch.save(self.model, model_path)
         print("Saved to {}".format(model_path))
 
-    def train(self, n_epoch=10):
+    def train(self, n_epoch=10, debug=False):
         train_loader = get_data_loader(train=True)
         log_step = len(train_loader) // 10
-        loaded_model = self.load_model(str(self.model))
         use_cuda = torch.cuda.is_available()
         if use_cuda:
             self.model.cuda()
-        # best_accuracy = calc_accuracy(loaded_model, train_loader)
-        best_accuracy = 0
+        if debug:
+            loaded_model = None
+        else:
+            loaded_model = self.load_model(str(self.model))
+        best_accuracy = calc_accuracy(loaded_model, train_loader)
         dataset_name = type(train_loader.dataset).__name__
         print("Training '{}'. Best {} train accuracy so far: {:.4f}".format(
             str(self.model), dataset_name, best_accuracy))
