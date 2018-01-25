@@ -19,23 +19,34 @@ class BinaryFunc(torch.autograd.Function):
         return grad_output
 
 
-class BinaryLinear(nn.Linear):
+class _BinaryWrapper(object):
 
-    def __init__(self, in_features, out_features, bias=True):
-        super().__init__(in_features, out_features, bias)
-        matrix_proba = torch.FloatTensor(self.weight.data.shape).fill_(0.5)
-        self.weight.data = torch.bernoulli(matrix_proba) * 2 - 1
-        self.weight_clone = self.weight.clone()
+    def __init__(self, cls, weight: nn.Parameter):
+        self.cls = cls
+        matrix_proba = torch.FloatTensor(weight.data.shape).fill_(0.5)
+        weight.data = torch.bernoulli(matrix_proba) * 2 - 1
+        self.weight_clone = weight.clone()
+        self.weight = weight
 
-    def forward(self, x):
+    def forward_binary(self, x):
         x_mean = torch.mean(torch.abs(x))
         x = BinaryFunc.apply(x)
         self.weight_clone = self.weight.clone()
         self.weight.data.sign_()
-        x = F.linear(x, self.weight, self.bias)
+        x = self.cls.forward(self, x)
         self.weight.data = self.weight_clone.data
         x = F.mul(x, x_mean)
         return x
+
+
+class BinaryLinear(nn.Linear, _BinaryWrapper):
+
+    def __init__(self, in_features, out_features):
+        nn.Linear.__init__(self, in_features, out_features, bias=False)
+        _BinaryWrapper.__init__(self, nn.Linear, self.weight)
+
+    def forward(self, x):
+        return self.forward_binary(x)
 
     def named_parameters(self, memo=None, prefix=''):
         for name, param in super().named_parameters(memo, prefix):
@@ -43,25 +54,14 @@ class BinaryLinear(nn.Linear):
             yield name, param
 
 
-class BinaryConv2d(nn.Conv2d):
+class BinaryConv2d(nn.Conv2d, _BinaryWrapper):
 
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1,
-                 padding=0, dilation=1, groups=1, bias=True):
-        super().__init__(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias)
-        matrix_proba = torch.FloatTensor(self.weight.data.shape).fill_(0.5)
-        self.weight.data = torch.bernoulli(matrix_proba) * 2 - 1
-        self.weight_clone = self.weight.clone()
+    def __init__(self, in_channels, out_channels, kernel_size, padding):
+        nn.Conv2d.__init__(self, in_channels, out_channels, kernel_size, padding=padding, bias=False)
+        _BinaryWrapper.__init__(self, nn.Conv2d, self.weight)
 
     def forward(self, x):
-        x_mean = torch.mean(torch.abs(x))
-        x = BinaryFunc.apply(x)
-        self.weight_clone = self.weight.clone()
-        self.weight.data.sign_()
-        x = F.conv2d(x, self.weight, self.bias, self.stride,
-                     self.padding, self.dilation, self.groups)
-        self.weight.data = self.weight_clone.data
-        x = F.mul(x, x_mean)
-        return x
+        return self.forward_binary(x)
 
     def named_parameters(self, memo=None, prefix=''):
         for name, param in super().named_parameters(memo, prefix):
