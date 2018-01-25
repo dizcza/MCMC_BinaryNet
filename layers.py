@@ -48,11 +48,6 @@ class BinaryLinear(nn.Linear, _BinaryWrapper):
     def forward(self, x):
         return self.forward_binary(x)
 
-    def named_parameters(self, memo=None, prefix=''):
-        for name, param in super().named_parameters(memo, prefix):
-            param.is_binary = True
-            yield name, param
-
 
 class BinaryConv2d(nn.Conv2d, _BinaryWrapper):
 
@@ -62,11 +57,6 @@ class BinaryConv2d(nn.Conv2d, _BinaryWrapper):
 
     def forward(self, x):
         return self.forward_binary(x)
-
-    def named_parameters(self, memo=None, prefix=''):
-        for name, param in super().named_parameters(memo, prefix):
-            param.is_binary = True
-            yield name, param
 
 
 class ScaleFunc(torch.autograd.Function):

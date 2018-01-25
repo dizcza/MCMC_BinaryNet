@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.utils.data
 from torch.autograd import Variable
 
-from layers import ScaleLayer, BinaryConv2d, BinaryLinear
+from layers import ScaleLayer, BinaryConv2d, BinaryLinear, _BinaryWrapper
 from trainer import StepLRClamp, Trainer, test
 
 
@@ -37,7 +37,13 @@ class NetBinary(nn.Module):
             yield param
 
     def named_parameters_binary(self):
-        return filter(lambda named_param: getattr(named_param[1], "is_binary", False), self.named_parameters())
+        named_params = []
+        for module_id, module in enumerate(self.modules()):
+            if isinstance(module, _BinaryWrapper):
+                for name, params in module.named_parameters():
+                    name = "{}.{:d}.{}".format(type(module).__name__, module_id, name)
+                    named_params.append((name, params))
+        return named_params
 
     def forward(self, x):
         x = self.conv_sequential(x)
