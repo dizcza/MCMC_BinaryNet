@@ -15,8 +15,8 @@ class NetBinary(nn.Module):
         conv_layers = []
         for (in_features, out_features) in zip(conv_channels[:-1], conv_channels[1:]):
             conv_layers.append(nn.BatchNorm2d(in_features))
-            conv_layers.append(BinaryConv2d(in_features, out_features, kernel_size=3, padding=1, bias=False))
-            conv_layers.append(nn.PReLU(out_features))
+            conv_layers.append(BinaryConv2d(in_features, out_features, kernel_size=5, padding=2, bias=False))
+            conv_layers.append(nn.PReLU())
         self.conv_sequential = nn.Sequential(*conv_layers)
 
         fc_in_features = 28 ** 2 * conv_channels[-1]
@@ -25,7 +25,7 @@ class NetBinary(nn.Module):
         for (in_features, out_features) in zip(fc_sizes[:-1], fc_sizes[1:]):
             fc_layers.append(nn.BatchNorm1d(in_features))
             fc_layers.append(BinaryLinear(in_features, out_features, bias=False))
-            fc_layers.append(nn.PReLU(out_features))
+            fc_layers.append(nn.PReLU())
         self.fc_sequential = nn.Sequential(*fc_layers)
         self.scale_layer = ScaleLayer()
 
@@ -33,7 +33,11 @@ class NetBinary(nn.Module):
         return type(self).__name__
 
     def parameters_binary(self):
-        return filter(lambda param: getattr(param, "is_binary", False), self.parameters())
+        for name, param in self.named_parameters_binary():
+            yield param
+
+    def named_parameters_binary(self):
+        return filter(lambda named_param: getattr(named_param[1], "is_binary", False), self.named_parameters())
 
     def forward(self, x):
         x = self.conv_sequential(x)
@@ -43,17 +47,17 @@ class NetBinary(nn.Module):
         return x
 
 
-def train_binary(n_epoch=10):
-    conv_channels = [1, 2]
-    fc_sizes = [1024, 10]
+def train_binary(n_epoch=100):
+    conv_channels = [1, 10, 20]
+    fc_sizes = [320, 50, 10]
     model = NetBinary(conv_channels, fc_sizes)
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-    scheduler = StepLRClamp(optimizer, step_size=1, gamma=0.5, min_lr=1e-6)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+    scheduler = StepLRClamp(optimizer, step_size=2, gamma=0.5, min_lr=1e-6)
     trainer = Trainer(model, criterion, optimizer, scheduler)
     trainer.train(n_epoch, debug=True)
 
 
 if __name__ == '__main__':
     train_binary()
-    test()
+    # test()

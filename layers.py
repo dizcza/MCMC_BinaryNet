@@ -21,31 +21,52 @@ class BinaryFunc(torch.autograd.Function):
 
 class BinaryLinear(nn.Linear):
 
+    def __init__(self, in_features, out_features, bias=True):
+        super().__init__(in_features, out_features, bias)
+        matrix_proba = torch.FloatTensor(self.weight.data.shape).fill_(0.5)
+        self.weight.data = torch.bernoulli(matrix_proba) * 2 - 1
+        self.weight_clone = self.weight.clone()
+
     def forward(self, x):
         x_mean = torch.mean(torch.abs(x))
-        x = F.linear(BinaryFunc.apply(x), self.weight.sign(), self.bias)
+        x = BinaryFunc.apply(x)
+        self.weight_clone = self.weight.clone()
+        self.weight.data.sign_()
+        x = F.linear(x, self.weight, self.bias)
+        self.weight.data = self.weight_clone.data
         x = F.mul(x, x_mean)
         return x
 
-    def parameters(self):
-        for p in super().parameters():
-            p.is_binary = True
-            yield p
+    def named_parameters(self, memo=None, prefix=''):
+        for name, param in super().named_parameters(memo, prefix):
+            param.is_binary = True
+            yield name, param
 
 
 class BinaryConv2d(nn.Conv2d):
 
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1,
+                 padding=0, dilation=1, groups=1, bias=True):
+        super().__init__(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias)
+        matrix_proba = torch.FloatTensor(self.weight.data.shape).fill_(0.5)
+        self.weight.data = torch.bernoulli(matrix_proba) * 2 - 1
+        self.weight_clone = self.weight.clone()
+
     def forward(self, x):
         x_mean = torch.mean(torch.abs(x))
-        x = F.conv2d(BinaryFunc.apply(x), self.weight.sign(), self.bias, self.stride,
+        x = BinaryFunc.apply(x)
+        self.weight_clone = self.weight.clone()
+        self.weight.data.sign_()
+        x = F.conv2d(x, self.weight, self.bias, self.stride,
                      self.padding, self.dilation, self.groups)
+        self.weight.data = self.weight_clone.data
         x = F.mul(x, x_mean)
         return x
 
-    def parameters(self):
-        for p in super().parameters():
-            p.is_binary = True
-            yield p
+    def named_parameters(self, memo=None, prefix=''):
+        for name, param in super().named_parameters(memo, prefix):
+            param.is_binary = True
+            yield name, param
 
 
 class ScaleFunc(torch.autograd.Function):

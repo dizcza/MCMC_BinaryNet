@@ -70,9 +70,12 @@ class Trainer(object):
     @staticmethod
     def load_model(model_name) -> Union[nn.Module, None]:
         model_path = os.path.join(MODELS_DIR, model_name + '.pt')
-        if os.path.exists(model_path):
+        if not os.path.exists(model_path):
+            return None
+        try:
             return torch.load(model_path)
-        else:
+        except Exception:
+            print("Couldn't load previously saved {}.pt model".format(model_name))
             return None
 
     def save_model(self):
@@ -82,8 +85,20 @@ class Trainer(object):
         torch.save(self.model, model_path)
         print("Saved to {}".format(model_path))
 
+    def optimizer_step_analyze(self) -> int:
+        param_sign_before = {}
+        for name, param in self.model.named_parameters_binary():
+            param_sign_before[name] = param.data.clone()
+        self.optimizer.step()
+        changed_signs = 0
+        # for name, param in self.model.named_parameters_binary():
+        #     print(name, float(param.grad.min()), float(param.grad.max()), float(param.data.min()), float(param.data.max()))
+        for name, param in self.model.named_parameters_binary():
+            changed_signs += torch.sum((param.data * param_sign_before[name]) < 0)
+        return changed_signs
+
     def train(self, n_epoch=10, debug=False):
-        train_loader = get_data_loader(train=True)
+        train_loader = get_data_loader(train=True, batch_size=128)
         log_step = len(train_loader) // 10
         use_cuda = torch.cuda.is_available()
         if use_cuda:
@@ -96,10 +111,16 @@ class Trainer(object):
         dataset_name = type(train_loader.dataset).__name__
         print("Training '{}'. Best {} train accuracy so far: {:.4f}".format(
             str(self.model), dataset_name, best_accuracy))
+
+        total_binary_params = 0
+        for param in self.model.parameters_binary():
+            total_binary_params += param.numel()
+
         for epoch in range(n_epoch):
+            changed_signs = 0
             if self.scheduler is not None:
                 self.scheduler.step()
-            for batch_id, (images, labels) in enumerate(train_loader):
+            for batch_id, (images, labels) in enumerate(train_loader, start=1):
                 images = Variable(images)
                 labels = Variable(labels)
                 if use_cuda:
@@ -110,14 +131,18 @@ class Trainer(object):
                 outputs = self.model(images)
                 loss = self.criterion(outputs, labels)
                 loss.backward()
-                self.optimizer.step()
-                for param_binary in self.model.parameters_binary():
-                    param_binary.data.clamp_(min=-1, max=1)
+                changed_signs += self.optimizer_step_analyze()
+
+                # todo: do we actually need weight clipping?
+                for param in self.model.parameters_binary():
+                    param.data.clamp_(min=-1, max=1)
 
                 if batch_id % log_step == 0:
                     batch_accuracy = get_softmax_accuracy(outputs, labels)
-                    print('Epoch [%d/%d], Step [%d/%d], Loss: %.4f, Batch accuracy: %.4f' % (
-                        epoch, n_epoch, batch_id, len(train_loader), loss.data[0], batch_accuracy))
+                    changed_signs_relative = changed_signs / (batch_id * total_binary_params)
+                    print('Epoch [%d/%d], Step [%d/%d], Loss: %.4f, Batch accuracy: %.4f, Changed signs: %.2e' % (
+                           epoch, n_epoch, batch_id, len(train_loader), loss.data[0], batch_accuracy,
+                           changed_signs_relative))
             if not debug:
                 accuracy = calc_accuracy(self.model, train_loader)
                 if accuracy > best_accuracy:
@@ -130,6 +155,10 @@ def test():
     for model_name in os.listdir(MODELS_DIR):
         model_path = os.path.join(MODELS_DIR, model_name)
         test_loader = get_data_loader(train=False)
-        model = torch.load(model_path)
+        try:
+            model = torch.load(model_path)
+        except Exception:
+            print("Skipped {} model".format(model_path))
+            continue
         accur = calc_accuracy(model, test_loader)
         print("\t{}: {:.4f}".format(str(model), accur))

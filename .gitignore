@@ -12,3 +12,6 @@ models_bin/
 
 # ignored files
 ignored/
+
+# sshfs mounted
+mounted/
