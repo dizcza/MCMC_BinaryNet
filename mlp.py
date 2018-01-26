@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.utils.data
 
-from layers import ScaleLayer, BinaryConv2d, BinaryLinear, _BinaryWrapper
+from layers import ScaleLayer, binary_decorator
 from trainer import StepLRClamp, Trainer, test
 
 
@@ -10,18 +10,20 @@ class NetBinary(nn.Module):
     def __init__(self, conv_channels, fc_sizes):
         super().__init__()
 
+        BinaryConv2d = binary_decorator(nn.Conv2d)
         conv_layers = []
         for (in_features, out_features) in zip(conv_channels[:-1], conv_channels[1:]):
             conv_layers.append(nn.BatchNorm2d(in_features))
-            conv_layers.append(BinaryConv2d(in_features, out_features, kernel_size=5, padding=0))
+            conv_layers.append(BinaryConv2d(in_features, out_features, kernel_size=5, padding=0, bias=False))
             conv_layers.append(nn.MaxPool2d(kernel_size=2))
             conv_layers.append(nn.PReLU())
         self.conv_sequential = nn.Sequential(*conv_layers)
 
+        BinaryLinear = binary_decorator(nn.Linear)
         fc_layers = []
         for (in_features, out_features) in zip(fc_sizes[:-1], fc_sizes[1:]):
             fc_layers.append(nn.BatchNorm1d(in_features))
-            fc_layers.append(BinaryLinear(in_features, out_features))
+            fc_layers.append(BinaryLinear(in_features, out_features, bias=False))
             fc_layers.append(nn.PReLU())
         self.fc_sequential = nn.Sequential(*fc_layers)
         self.scale_layer = ScaleLayer()
@@ -34,13 +36,7 @@ class NetBinary(nn.Module):
             yield param
 
     def named_parameters_binary(self):
-        named_params = []
-        for module_id, module in enumerate(self.modules()):
-            if isinstance(module, _BinaryWrapper):
-                for name, params in module.named_parameters():
-                    name = "{}.{:d}.{}".format(type(module).__name__, module_id, name)
-                    named_params.append((name, params))
-        return named_params
+        return filter(lambda named_param: getattr(named_param[1], "is_binary", False), self.named_parameters())
 
     def forward(self, x):
         x = self.conv_sequential(x)

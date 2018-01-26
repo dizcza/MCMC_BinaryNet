@@ -19,44 +19,31 @@ class BinaryFunc(torch.autograd.Function):
         return grad_output
 
 
-class _BinaryWrapper(object):
+def binary_decorator(cls):
+    class _BinaryDecorator(nn.Module):
+        def __init__(self, *args, **kwargs):
+            super().__init__()
+            layer = cls(*args, **kwargs)
+            matrix_proba = torch.FloatTensor(layer.weight.data.shape).fill_(0.5)
+            layer.weight.data = torch.bernoulli(matrix_proba) * 2 - 1
+            layer.weight_clone = layer.weight.clone()
+            for param in layer.parameters():
+                param.is_binary = True
+            self.layer = layer
 
-    def __init__(self, cls, weight: nn.Parameter):
-        self.cls = cls
-        matrix_proba = torch.FloatTensor(weight.data.shape).fill_(0.5)
-        weight.data = torch.bernoulli(matrix_proba) * 2 - 1
-        self.weight_clone = weight.clone()
-        self.weight = weight
+        def forward(self, x):
+            x_mean = torch.mean(torch.abs(x))
+            x = BinaryFunc.apply(x)
+            self.layer.weight_clone = self.layer.weight.clone()
+            self.layer.weight.data.sign_()
+            # assert not (self.layer.weight.data == 0).any()
+            # assert not (x == 0).any()
+            x = self.layer.forward(x)
+            self.layer.weight.data = self.layer.weight_clone.data
+            x = F.mul(x, x_mean)
+            return x
 
-    def forward_binary(self, x):
-        x_mean = torch.mean(torch.abs(x))
-        x = BinaryFunc.apply(x)
-        self.weight_clone = self.weight.clone()
-        self.weight.data.sign_()
-        x = self.cls.forward(self, x)
-        self.weight.data = self.weight_clone.data
-        x = F.mul(x, x_mean)
-        return x
-
-
-class BinaryLinear(nn.Linear, _BinaryWrapper):
-
-    def __init__(self, in_features, out_features):
-        nn.Linear.__init__(self, in_features, out_features, bias=False)
-        _BinaryWrapper.__init__(self, nn.Linear, self.weight)
-
-    def forward(self, x):
-        return self.forward_binary(x)
-
-
-class BinaryConv2d(nn.Conv2d, _BinaryWrapper):
-
-    def __init__(self, in_channels, out_channels, kernel_size, padding=0):
-        nn.Conv2d.__init__(self, in_channels, out_channels, kernel_size, padding=padding, bias=False)
-        _BinaryWrapper.__init__(self, nn.Conv2d, self.weight)
-
-    def forward(self, x):
-        return self.forward_binary(x)
+    return _BinaryDecorator
 
 
 class ScaleFunc(torch.autograd.Function):
