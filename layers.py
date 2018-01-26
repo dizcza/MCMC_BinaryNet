@@ -19,31 +19,33 @@ class BinaryFunc(torch.autograd.Function):
         return grad_output
 
 
-def binary_decorator(cls):
-    class _BinaryDecorator(nn.Module):
-        def __init__(self, *args, **kwargs):
-            super().__init__()
-            layer = cls(*args, **kwargs)
-            matrix_proba = torch.FloatTensor(layer.weight.data.shape).fill_(0.5)
-            layer.weight.data = torch.bernoulli(matrix_proba) * 2 - 1
-            layer.weight_clone = layer.weight.clone()
-            for param in layer.parameters():
-                param.is_binary = True
-            self.layer = layer
+class BinaryDecorator(nn.Module):
+    def __init__(self, layer: nn.Module):
+        super().__init__()
+        matrix_proba = torch.FloatTensor(layer.weight.data.shape).fill_(0.5)
+        layer.weight.data = torch.bernoulli(matrix_proba) * 2 - 1
+        layer.weight_clone = layer.weight.clone()
+        for param in layer.parameters():
+            param.is_binary = True
+        self.layer = layer
 
-        def forward(self, x):
-            x_mean = torch.mean(torch.abs(x))
-            x = BinaryFunc.apply(x)
-            self.layer.weight_clone = self.layer.weight.clone()
-            self.layer.weight.data.sign_()
-            # assert not (self.layer.weight.data == 0).any()
-            # assert not (x == 0).any()
-            x = self.layer.forward(x)
-            self.layer.weight.data = self.layer.weight_clone.data
-            x = F.mul(x, x_mean)
-            return x
-
-    return _BinaryDecorator
+    def forward(self, x):
+        x_mean = torch.mean(torch.abs(x))
+        x = BinaryFunc.apply(x)
+        self.layer.weight_clone = self.layer.weight.clone()
+        self.layer.weight.data.sign_()
+        if (self.layer.weight.data == 0).any():
+            print((self.layer.weight.data == 0).sum())
+            print('weight')
+        if (x == 0).any():
+            print((x == 0).sum())
+            print('x')
+        assert not (self.layer.weight.data == 0).any()
+        assert not (x == 0).any()
+        x = self.layer.forward(x)
+        self.layer.weight.data = self.layer.weight_clone.data
+        x = F.mul(x, x_mean)
+        return x
 
 
 class ScaleFunc(torch.autograd.Function):

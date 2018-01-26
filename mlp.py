@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.utils.data
 
-from layers import ScaleLayer, binary_decorator
+from layers import ScaleLayer, BinaryDecorator
 from trainer import StepLRClamp, Trainer, test
 
 
@@ -10,20 +10,22 @@ class NetBinary(nn.Module):
     def __init__(self, conv_channels, fc_sizes):
         super().__init__()
 
-        BinaryConv2d = binary_decorator(nn.Conv2d)
         conv_layers = []
         for (in_features, out_features) in zip(conv_channels[:-1], conv_channels[1:]):
             conv_layers.append(nn.BatchNorm2d(in_features))
-            conv_layers.append(BinaryConv2d(in_features, out_features, kernel_size=5, padding=0, bias=False))
+            layer = nn.Conv2d(in_features, out_features, kernel_size=5, padding=0, bias=False)
+            layer = BinaryDecorator(layer)
+            conv_layers.append(layer)
             conv_layers.append(nn.MaxPool2d(kernel_size=2))
             conv_layers.append(nn.PReLU())
         self.conv_sequential = nn.Sequential(*conv_layers)
 
-        BinaryLinear = binary_decorator(nn.Linear)
         fc_layers = []
         for (in_features, out_features) in zip(fc_sizes[:-1], fc_sizes[1:]):
             fc_layers.append(nn.BatchNorm1d(in_features))
-            fc_layers.append(BinaryLinear(in_features, out_features, bias=False))
+            layer = nn.Linear(in_features, out_features, bias=False)
+            layer = BinaryDecorator(layer)
+            fc_layers.append(layer)
             fc_layers.append(nn.PReLU())
         self.fc_sequential = nn.Sequential(*fc_layers)
         self.scale_layer = ScaleLayer()
@@ -54,7 +56,7 @@ def train_binary(n_epoch=50):
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
     scheduler = StepLRClamp(optimizer, step_size=2, gamma=0.5, min_lr=1e-6)
     trainer = Trainer(model, criterion, optimizer, scheduler)
-    trainer.train(n_epoch, debug=False)
+    trainer.train(n_epoch, debug=1)
 
 
 if __name__ == '__main__':
