@@ -88,7 +88,7 @@ class Trainer(object):
     def optimizer_step_analyze(self) -> int:
         param_sign_before = {}
         for name, param in self.model.named_parameters_binary():
-            param_sign_before[name] = param.data.clone()
+            param_sign_before[name] = param.data.sign()
         self.optimizer.step(closure=None)
         sign_flips = 0
         # for name, param in self.model.named_parameters_binary():
@@ -109,9 +109,9 @@ class Trainer(object):
         return best_accuracy
 
     def train(self, n_epoch=10, debug=False):
+        use_cuda = torch.cuda.is_available()
         train_loader = get_data_loader(train=True)
         log_step = len(train_loader) // 10
-        use_cuda = torch.cuda.is_available()
         if use_cuda:
             self.model.cuda()
         best_accuracy = self.load_best_accuracy(debug)
@@ -157,11 +157,11 @@ class Trainer(object):
                     self.save_model()
 
 
-def test():
-    print("Test accuracy:")
+def test(train=False):
+    print("{} accuracy:".format("train" if train else "test"))
     for model_name in os.listdir(MODELS_DIR):
         model_path = os.path.join(MODELS_DIR, model_name)
-        test_loader = get_data_loader(train=False)
+        test_loader = get_data_loader(train)
         try:
             model = torch.load(model_path)
             accur = calc_accuracy(model, test_loader)

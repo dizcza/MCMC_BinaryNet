@@ -51,7 +51,7 @@ class BinaryLinear(nn.Linear, _BinaryWrapper):
 
 class BinaryConv2d(nn.Conv2d, _BinaryWrapper):
 
-    def __init__(self, in_channels, out_channels, kernel_size, padding):
+    def __init__(self, in_channels, out_channels, kernel_size, padding=0):
         nn.Conv2d.__init__(self, in_channels, out_channels, kernel_size, padding=padding, bias=False)
         _BinaryWrapper.__init__(self, nn.Conv2d, self.weight)
 
