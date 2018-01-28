@@ -24,7 +24,6 @@ class BinaryDecorator(nn.Module):
         super().__init__()
         matrix_proba = torch.FloatTensor(layer.weight.data.shape).fill_(0.5)
         layer.weight.data = torch.bernoulli(matrix_proba) * 2 - 1
-        layer.weight_clone = layer.weight.clone()
         for param in layer.parameters():
             param.is_binary = True
         self.layer = layer
@@ -32,10 +31,10 @@ class BinaryDecorator(nn.Module):
     def forward(self, x):
         x_mean = torch.mean(torch.abs(x))
         x = BinaryFunc.apply(x)
-        self.layer.weight_clone = self.layer.weight.clone()
+        weight_full = self.layer.weight.data.clone()
         self.layer.weight.data.sign_()
         x = self.layer.forward(x)
-        self.layer.weight.data = self.layer.weight_clone.data
+        self.layer.weight.data = weight_full
         x = F.mul(x, x_mean)
         return x
 
