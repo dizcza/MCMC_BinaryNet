@@ -34,14 +34,6 @@ class BinaryDecorator(nn.Module):
         x = BinaryFunc.apply(x)
         self.layer.weight_clone = self.layer.weight.clone()
         self.layer.weight.data.sign_()
-        if (self.layer.weight.data == 0).any():
-            print((self.layer.weight.data == 0).sum())
-            print('weight')
-        if (x == 0).any():
-            print((x == 0).sum())
-            print('x')
-        assert not (self.layer.weight.data == 0).any()
-        assert not (x == 0).any()
         x = self.layer.forward(x)
         self.layer.weight.data = self.layer.weight_clone.data
         x = F.mul(x, x_mean)
