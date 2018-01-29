@@ -38,6 +38,9 @@ class BinaryDecorator(nn.Module):
         x = F.mul(x, x_mean)
         return x
 
+    def __repr__(self):
+        return "[Binary]" + repr(self.layer)
+
 
 class ScaleFunc(torch.autograd.Function):
 
@@ -60,3 +63,6 @@ class ScaleLayer(nn.Module):
 
     def forward(self, input):
         return ScaleFunc.apply(input, self.scale)
+
+    def __repr__(self):
+        return self.__class__.__name__ + "({} parameters)".format(self.scale.numel())

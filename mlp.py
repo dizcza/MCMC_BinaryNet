@@ -3,7 +3,9 @@ import torch.nn as nn
 import torch.utils.data
 
 from layers import ScaleLayer, BinaryDecorator
-from trainer import StepLRClamp, Trainer, test
+from trainer import Trainer
+from utils import StepLRClamp
+from metrics import test
 
 
 class NetBinary(nn.Module):

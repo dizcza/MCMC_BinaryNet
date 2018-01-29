@@ -1,0 +1,3 @@
+import os
+
+MODELS_DIR = os.path.join(os.path.dirname(__file__), "models_bin")
