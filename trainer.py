@@ -36,6 +36,7 @@ class Trainer(object):
             self.model.cuda()
         metrics = Metrics(self.model, train_loader)
         best_accuracy = metrics.load_best_accuracy(str(self.model), debug)
+        metrics.log_best_accuracy(best_accuracy)
         dataset_name = type(train_loader.dataset).__name__
         print("Training '{}'. Best {} train accuracy so far: {:.4f}".format(
             str(self.model), dataset_name, best_accuracy))
@@ -66,7 +67,8 @@ class Trainer(object):
 
             if not debug:
                 accuracy = calc_accuracy(self.model, train_loader)
-                metrics.update_train_accuracy(accuracy)
-                if accuracy > best_accuracy:
+                is_best = accuracy > best_accuracy
+                metrics.update_train_accuracy(accuracy, is_best)
+                if is_best:
                     self.save_model(accuracy)
                     best_accuracy = accuracy

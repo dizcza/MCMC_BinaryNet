@@ -66,7 +66,6 @@ def test(train=False):
 
 
 class Metrics(object):
-    # todo: weights distribution (close to 0 or 1)
     # todo: plot gradients, feature maps
 
     def __init__(self, model: nn.Module, loader: torch.utils.data.DataLoader):
@@ -83,7 +82,7 @@ class Metrics(object):
         }
 
     @staticmethod
-    def load_best_accuracy(model_name, debug: bool) -> float:
+    def load_best_accuracy(model_name: str, debug: bool) -> float:
         train_loader = get_data_loader(train=True)
         best_accuracy = 0.
         if not debug:
@@ -120,6 +119,12 @@ class Metrics(object):
                 xlabel='Epoch',
                 ylabel='Loss',
             ))
+            for name, param in self.model.named_parameters_binary():
+                self.viz.histogram(param.data.view(-1), win=name, opts=dict(
+                    xlabel='Param norm',
+                    ylabel='# bins (distribution)',
+                    title=name,
+                ))
         self.batch_id += 1
 
     def update_signs(self) -> int:
@@ -132,9 +137,17 @@ class Metrics(object):
             self.param_sign_before[name] = new_sign
         return sign_flips
 
-    def update_train_accuracy(self, accuracy: float):
+    def log_best_accuracy(self, best_accuracy: float):
+        self.viz.text("{} Best train accuracy: {:.4f}".format(time.strftime('%Y-%b-%d %H:%M'), best_accuracy),
+                      win='best_accuracy',
+                      append=self.viz.win_exists(win='best_accuracy'))
+
+    def update_train_accuracy(self, accuracy: float, is_best=False):
         self._draw_line(accuracy, win='train_accuracy', opts=dict(
             xlabel='Epoch',
             ylabel='Accuracy',
-            title='Train full dataset accuracy'
+            title='Train full dataset accuracy',
+            markers=True,
         ))
+        if is_best:
+            self.log_best_accuracy(accuracy)
