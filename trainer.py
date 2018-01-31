@@ -1,4 +1,5 @@
 import os
+
 import torch
 import torch.nn as nn
 import torch.utils.data
@@ -7,7 +8,7 @@ from tqdm import tqdm
 
 from constants import MODELS_DIR
 from metrics import Metrics, calc_accuracy
-from utils import get_data_loader
+from utils import get_data_loader, parameters_binary
 
 
 class Trainer(object):
@@ -23,9 +24,9 @@ class Trainer(object):
             os.makedirs(MODELS_DIR)
         model_path = os.path.join(MODELS_DIR, str(self.model) + '.pt')
         torch.save(self.model, model_path)
-        msg = "Saved to {}".format(model_path)
+        msg = f"Saved to {model_path}"
         if accuracy is not None:
-            msg += " (train accuracy: {:.4f})".format(accuracy)
+            msg += f" (train accuracy: {accuracy:.4f})"
         print(msg)
 
     def train(self, n_epoch=10, debug=False):
@@ -34,16 +35,16 @@ class Trainer(object):
         train_loader = get_data_loader(train=True)
         if use_cuda:
             self.model.cuda()
-        metrics = Metrics(self.model, train_loader)
+        metrics = Metrics(self.model, train_loader, monitor_sign='all')
         best_accuracy = metrics.load_best_accuracy(str(self.model), debug)
-        metrics.log_best_accuracy(best_accuracy)
+        metrics.log(f"Best train accuracy so far: {best_accuracy:.4f}")
         dataset_name = type(train_loader.dataset).__name__
-        print("Training '{}'. Best {} train accuracy so far: {:.4f}".format(
-            str(self.model), dataset_name, best_accuracy))
+        print(f"Training '{self.model}'. Best {dataset_name} train accuracy so far: {best_accuracy:.4f}")
 
         for epoch in range(n_epoch):
             if self.scheduler is not None:
                 self.scheduler.step()
+            metrics.log(f"Epoch {epoch}. Learning rate {self.scheduler.get_lr()}")
             for images, labels in tqdm(train_loader,
                                        desc="Epoch {:d}/{:d}".format(epoch, n_epoch),
                                        leave=False):
@@ -61,8 +62,7 @@ class Trainer(object):
 
                 metrics.batch_finished(outputs, labels, loss)
 
-                # todo: do we actually need weight clipping?
-                for param in self.model.parameters_binary():
+                for param in parameters_binary(self.model):
                     param.data.clamp_(min=-1, max=1)
 
             if not debug:

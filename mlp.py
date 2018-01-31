@@ -2,10 +2,10 @@ import torch
 import torch.nn as nn
 import torch.utils.data
 
-from layers import ScaleLayer, BinaryDecorator
+from layers import ScaleLayer, BinaryDecorator, binarize_model
+from metrics import test
 from trainer import Trainer
 from utils import StepLRClamp
-from metrics import test
 
 
 class NetBinary(nn.Module):
@@ -35,13 +35,6 @@ class NetBinary(nn.Module):
     def __str__(self):
         return type(self).__name__
 
-    def parameters_binary(self):
-        for name, param in self.named_parameters_binary():
-            yield param
-
-    def named_parameters_binary(self):
-        return filter(lambda named_param: getattr(named_param[1], "is_binary", False), self.named_parameters())
-
     def forward(self, x):
         x = self.conv_sequential(x)
         x = x.view(x.shape[0], -1)
@@ -51,14 +44,14 @@ class NetBinary(nn.Module):
 
 
 def train_binary(n_epoch=50):
-    conv_channels = [1, 10, 20]
-    fc_sizes = [320, 50, 10]
+    conv_channels = [3, 10, 20]
+    fc_sizes = [500, 50, 10]
     model = NetBinary(conv_channels, fc_sizes)
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
     scheduler = StepLRClamp(optimizer, step_size=2, gamma=0.5, min_lr=1e-6)
     trainer = Trainer(model, criterion, optimizer, scheduler)
-    trainer.train(n_epoch, debug=1)
+    trainer.train(n_epoch, debug=0)
 
 
 if __name__ == '__main__':

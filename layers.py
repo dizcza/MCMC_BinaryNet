@@ -1,7 +1,31 @@
-import torch.nn.functional as F
 import torch
 import torch.nn as nn
+import torch.nn.modules.conv
+import torch.nn.functional as F
 import torch.utils.data
+
+
+def binarize_model(model: nn.Module, ignore=(nn.Dropout,)) -> nn.Module:
+    def _binary_decor(model: nn.Module) -> nn.Module:
+        if isinstance(model, nn.modules.conv._ConvNd):
+            model = BinaryDecorator(model)
+        elif isinstance(model, nn.Linear):
+            model = nn.Sequential(
+                nn.BatchNorm1d(model.in_features),
+                BinaryDecorator(model)
+            )
+        return model
+
+    for name, child in list(model.named_children()):
+        if isinstance(child, ignore):
+            delattr(model, name)
+            continue
+        child_new = binarize_model(child, ignore)
+        if child_new is not child:
+            setattr(model, name, child_new)
+    model = _binary_decor(model)
+
+    return model
 
 
 class BinaryFunc(torch.autograd.Function):
@@ -27,6 +51,10 @@ class BinaryDecorator(nn.Module):
         for param in layer.parameters():
             param.is_binary = True
         self.layer = layer
+
+    def compile_inference(self):
+        self.layer.weight.data.sign_()
+        self.forward = self.layer.forward
 
     def forward(self, x):
         x_mean = torch.mean(torch.abs(x))
@@ -65,4 +93,4 @@ class ScaleLayer(nn.Module):
         return ScaleFunc.apply(input, self.scale)
 
     def __repr__(self):
-        return self.__class__.__name__ + "({} parameters)".format(self.scale.numel())
+        return self.__class__.__name__ + f"({self.scale.numel()} parameters)"

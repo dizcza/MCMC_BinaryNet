@@ -1,19 +1,39 @@
 import os
+from typing import Union
+
 import torch
 import torch.nn as nn
 import torch.utils.data
 from torchvision import transforms, datasets
-from typing import Union
 
 from constants import MODELS_DIR
 
 
-def get_data_loader(train=True, batch_size=256) -> torch.utils.data.DataLoader:
+def parameters_binary(model: nn.Module):
+    for name, param in named_parameters_binary(model):
+        yield param
+
+
+def named_parameters_binary(model: nn.Module):
+    return filter(lambda named_param: getattr(named_param[1], "is_binary", False), model.named_parameters())
+
+
+def get_data_loader2(train=True, batch_size=256) -> torch.utils.data.DataLoader:
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,))
     ])
     dataset = datasets.MNIST('data', train=train, download=True, transform=transform)
+    loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    return loader
+
+
+def get_data_loader(train=True, batch_size=256) -> torch.utils.data.DataLoader:
+    transform = transforms.Compose(
+        [transforms.ToTensor(),
+         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+
+    dataset = datasets.CIFAR10('data', train=train, download=True, transform=transform)
     loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
     return loader
 
