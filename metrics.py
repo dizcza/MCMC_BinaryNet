@@ -8,7 +8,7 @@ import visdom
 from torch.autograd import Variable
 
 from constants import MODELS_DIR
-from utils import get_data_loader, parameters_binary, named_parameters_binary
+from utils import get_data_loader, parameters_binary, named_parameters_binary, find_param_by_name
 
 
 def get_softmax_accuracy(outputs, labels):
@@ -87,7 +87,7 @@ class Metrics(object):
         self.model = model
         self.total_binary_params = sum(map(torch.numel, parameters_binary(model)))
         self.batches_in_epoch = len(loader)
-        self.update_step = max(len(loader) // 10, 1)
+        self._update_step = max(len(loader) // 10, 1)
         self.batch_id = 0
         if monitor_sign == 'all':
             named_params = model.named_parameters()
@@ -98,6 +98,7 @@ class Metrics(object):
         self.param_sign_before = {
             name: param.data.sign() for name, param in named_params
         }
+        self._registered_params = {}
         self.log_model(model)
         n_params_full = sum(map(torch.numel, model.parameters()))
         self.log(f"Parameters total={n_params_full:e}, "
@@ -122,12 +123,12 @@ class Metrics(object):
         self.viz.text(f"{time.strftime('%Y-%b-%d %H:%M')} {text}", win='log', append=self.viz.win_exists(win='log'))
 
     def batch_finished(self, outputs: Variable, labels: Variable, loss: Variable):
-        if self.batch_id % self.update_step == 0:
+        if self.batch_id % self._update_step == 0:
             self.update_signs()
-            batch_accuracy = get_softmax_accuracy(outputs, labels)
-            self.update_batch_accuracy(batch_accuracy)
+            self.update_batch_accuracy(batch_accuracy=get_softmax_accuracy(outputs, labels))
             self.update_loss(loss.data[0])
-            self.update_weight_distribution()
+            self.update_registered_params()
+            self.update_gradients()
         self.batch_id += 1
 
     def update_batch_accuracy(self, batch_accuracy: float):
@@ -142,14 +143,6 @@ class Metrics(object):
             xlabel='Epoch',
             ylabel='Loss',
         ))
-
-    def update_weight_distribution(self):
-        for name, param in named_parameters_binary(self.model):
-            self.viz.histogram(param.data.view(-1), win=name, opts=dict(
-                xlabel='Param norm',
-                ylabel='# bins (distribution)',
-                title=name,
-            ))
 
     def update_signs(self):
         if len(self.param_sign_before) == 0:
@@ -185,10 +178,36 @@ class Metrics(object):
             title="[ALL LAYERS] Sign flips after optimizer.step()",
         ))
 
+    def register_param(self, param_name: str, param: nn.Parameter = None):
+        if param is None:
+            param = find_param_by_name(self.model, param_name)
+        if param is None:
+            raise ValueError(f"Illegal parameter name to register: {param_name}")
+        self._registered_params[param_name] = param
+
+    def update_registered_params(self):
+        for name, param in self._registered_params.items():
+            if param.numel() == 1:
+                self._draw_line(y=param.data[0], win=name, opts=dict(
+                    xlabel='Epoch',
+                    ylabel='Value',
+                    title=name,
+                ))
+            else:
+                self.viz.histogram(X=param.data.view(-1), win=name, opts=dict(
+                    xlabel='Param norm',
+                    ylabel='# bins (distribution)',
+                    title=name,
+                ))
+
     def update_gradients(self):
-        # todo make it real
-        for name, param in named_parameters_binary(self.model):
-            print(name, float(param.grad.min()), float(param.grad.max()), float(param.data.min()), float(param.data.max()))
+        for name, param in self._registered_params.items():
+            grad_norm = param.grad.data.norm(p=2)
+            self._draw_line(y=grad_norm, win=f'{name}.grad.norm', opts=dict(
+                xlabel='Epoch',
+                ylabel='Gradient L2 norm',
+                title=name,
+            ))
 
     def update_train_accuracy(self, accuracy: float, is_best=False):
         self._draw_line(accuracy, win='train_accuracy', opts=dict(

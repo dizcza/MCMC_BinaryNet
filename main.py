@@ -9,13 +9,13 @@ from utils import StepLRClamp
 
 
 class NetBinary(nn.Module):
-    def __init__(self, conv_channels, fc_sizes):
+    def __init__(self, conv_channels, fc_sizes, conv_kernel=3):
         super().__init__()
 
         conv_layers = []
         for (in_features, out_features) in zip(conv_channels[:-1], conv_channels[1:]):
             conv_layers.append(nn.BatchNorm2d(in_features))
-            layer = nn.Conv2d(in_features, out_features, kernel_size=5, padding=0, bias=False)
+            layer = nn.Conv2d(in_features, out_features, kernel_size=conv_kernel, padding=0, bias=False)
             layer = BinaryDecorator(layer)
             conv_layers.append(layer)
             conv_layers.append(nn.MaxPool2d(kernel_size=2))
@@ -41,14 +41,17 @@ class NetBinary(nn.Module):
 
 
 def train_binary():
-    conv_channels = [3, 10, 20]
-    fc_sizes = [500, 50, 10]
+    conv_channels = [1, 20, 40]
+    fc_sizes = [1440, 900, 10]
     model = NetBinary(conv_channels, fc_sizes)
+    # for n, p in model.named_parameters():
+    #     print(n)
+    # quit()
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
-    scheduler = StepLRClamp(optimizer, step_size=2, gamma=0.5, min_lr=1e-6)
+    scheduler = StepLRClamp(optimizer, step_size=2, gamma=0.5, min_lr=1e-8)
     trainer = Trainer(model, criterion, optimizer, dataset="CIFAR10", scheduler=scheduler)
-    trainer.train(n_epoch=50, debug=0)
+    trainer.train(n_epoch=200, debug=0)
 
 
 if __name__ == '__main__':

@@ -6,7 +6,7 @@ from tqdm import tqdm
 
 from constants import MODELS_DIR
 from metrics import Metrics, calc_accuracy
-from utils import get_data_loader, parameters_binary, load_model
+from utils import get_data_loader, named_parameters_binary, parameters_binary, load_model, find_param_by_name
 
 
 class Trainer(object):
@@ -46,11 +46,15 @@ class Trainer(object):
         train_loader = get_data_loader(self.dataset, train=True)
         if use_cuda:
             self.model.cuda()
-        metrics = Metrics(self.model, train_loader, monitor_sign='all')
+        metrics = Metrics(self.model, train_loader, monitor_sign='binary')
+        for name, param in named_parameters_binary(self.model):
+            metrics.register_param(name, param)
+        scale_param = find_param_by_name(self.model, name_search='scale_layer.scale')
+        if scale_param is not None:
+            metrics.register_param(param_name='scale_layer.scale', param=scale_param)
         best_accuracy = self.load_best_accuracy(debug)
         metrics.log(f"Best train accuracy so far: {best_accuracy:.4f}")
-        dataset_name = type(train_loader.dataset).__name__
-        print(f"Training '{self.model}'. Best {dataset_name} train accuracy so far: {best_accuracy:.4f}")
+        print(f"Training '{self.model}'. Best {self.dataset} train accuracy so far: {best_accuracy:.4f}")
 
         for epoch in range(n_epoch):
             if self.scheduler is not None:

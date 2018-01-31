@@ -18,6 +18,13 @@ def named_parameters_binary(model: nn.Module):
     return filter(lambda named_param: getattr(named_param[1], "is_binary", False), model.named_parameters())
 
 
+def find_param_by_name(model: nn.Module, name_search: str) -> Union[nn.Parameter, None]:
+    for name, param in model.named_parameters():
+        if name == name_search:
+            return param
+    return None
+
+
 def get_data_loader(dataset: str, train=True, batch_size=256) -> torch.utils.data.DataLoader:
     if dataset == "MNIST":
         dataset_cls = datasets.MNIST
@@ -28,6 +35,7 @@ def get_data_loader(dataset: str, train=True, batch_size=256) -> torch.utils.dat
     elif dataset == "CIFAR10":
         dataset_cls = datasets.CIFAR10
         transform = transforms.Compose([
+            transforms.Grayscale(num_output_channels=1),
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         ])
