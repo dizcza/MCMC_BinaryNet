@@ -1,4 +1,3 @@
-import os
 import time
 
 import numpy as np
@@ -9,7 +8,7 @@ import visdom
 from torch.autograd import Variable
 
 from constants import MODELS_DIR
-from utils import get_data_loader, load_model, parameters_binary, named_parameters_binary
+from utils import get_data_loader, parameters_binary, named_parameters_binary
 
 
 def get_softmax_accuracy(outputs, labels):
@@ -55,15 +54,18 @@ def calc_accuracy(model: nn.Module, loader: torch.utils.data.DataLoader):
 
 def test(train=False):
     print(f"{'train' if train else 'test'} accuracy:")
-    for model_name in os.listdir(MODELS_DIR):
-        model_path = os.path.join(MODELS_DIR, model_name)
-        test_loader = get_data_loader(train)
-        try:
-            model = torch.load(model_path)
-            accur = calc_accuracy(model, test_loader)
-            print(f"\t{model}: {accur:.4f}")
-        except Exception:
-            print(f"Skipped evaluating {model_path} model")
+    for dataset_path in MODELS_DIR.iterdir():
+        if not dataset_path.is_dir():
+            continue
+        print(f"\t{dataset_path.name}:")
+        for model_path in dataset_path.iterdir():
+            test_loader = get_data_loader(dataset=dataset_path.name, train=train)
+            try:
+                model = torch.load(model_path)
+                accur = calc_accuracy(model, test_loader)
+                print(f"\t\t{model}: {accur:.4f}")
+            except Exception:
+                print(f"Skipped evaluating {model_path} model")
 
 
 class Metrics(object):
@@ -107,18 +109,6 @@ class Metrics(object):
             n_spaces = len(line) - len(line.lstrip())
             line = space * n_spaces + line
             self.viz.text(line, win='model', append=True)
-
-    @staticmethod
-    def load_best_accuracy(model_name: str, debug: bool = False) -> float:
-        train_loader = get_data_loader(train=True)
-        best_accuracy = 0.
-        if not debug:
-            try:
-                loaded_model = load_model(model_name)
-                best_accuracy = calc_accuracy(loaded_model, train_loader)
-            except Exception:
-                print(f"Couldn't estimate the best accuracy for {model_name}. Reset to 0.")
-        return best_accuracy
 
     def _draw_line(self, y, win: str, opts: dict):
         epoch_progress = self.batch_id / self.batches_in_epoch

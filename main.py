@@ -32,9 +32,6 @@ class NetBinary(nn.Module):
         self.fc_sequential = nn.Sequential(*fc_layers)
         self.scale_layer = ScaleLayer()
 
-    def __str__(self):
-        return type(self).__name__
-
     def forward(self, x):
         x = self.conv_sequential(x)
         x = x.view(x.shape[0], -1)
@@ -43,15 +40,15 @@ class NetBinary(nn.Module):
         return x
 
 
-def train_binary(n_epoch=50):
+def train_binary():
     conv_channels = [3, 10, 20]
     fc_sizes = [500, 50, 10]
     model = NetBinary(conv_channels, fc_sizes)
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
     scheduler = StepLRClamp(optimizer, step_size=2, gamma=0.5, min_lr=1e-6)
-    trainer = Trainer(model, criterion, optimizer, scheduler)
-    trainer.train(n_epoch, debug=0)
+    trainer = Trainer(model, criterion, optimizer, dataset="CIFAR10", scheduler=scheduler)
+    trainer.train(n_epoch=50, debug=0)
 
 
 if __name__ == '__main__':

@@ -1,5 +1,3 @@
-import os
-
 import torch
 import torch.nn as nn
 import torch.utils.data
@@ -8,35 +6,48 @@ from tqdm import tqdm
 
 from constants import MODELS_DIR
 from metrics import Metrics, calc_accuracy
-from utils import get_data_loader, parameters_binary
+from utils import get_data_loader, parameters_binary, load_model
 
 
 class Trainer(object):
 
-    def __init__(self, model: nn.Module, criterion: nn.Module, optimizer: torch.optim.Optimizer, scheduler=None):
+    def __init__(self, model: nn.Module, criterion: nn.Module, optimizer: torch.optim.Optimizer, dataset: str,
+                 scheduler=None):
         self.model = model
         self.criterion = criterion
         self.optimizer = optimizer
+        self.dataset = dataset
         self.scheduler = scheduler
 
     def save_model(self, accuracy: float = None):
-        if not os.path.exists(MODELS_DIR):
-            os.makedirs(MODELS_DIR)
-        model_path = os.path.join(MODELS_DIR, str(self.model) + '.pt')
+        MODELS_DIR.mkdir(exist_ok=True)
+        model_path = MODELS_DIR.joinpath(self.dataset, self.model.__class__.__name__).with_suffix('.pt')
+        model_path.parent.mkdir(exist_ok=True)
         torch.save(self.model, model_path)
         msg = f"Saved to {model_path}"
         if accuracy is not None:
             msg += f" (train accuracy: {accuracy:.4f})"
         print(msg)
 
+    def load_best_accuracy(self, debug=False) -> float:
+        train_loader = get_data_loader(self.dataset, train=True)
+        best_accuracy = 0.
+        if not debug:
+            try:
+                loaded_model = load_model(self.dataset, self.model.__class__.__name__)
+                best_accuracy = calc_accuracy(loaded_model, train_loader)
+            except Exception:
+                print(f"Couldn't estimate the best accuracy for {self.model}. Reset to 0.")
+        return best_accuracy
+
     def train(self, n_epoch=10, debug=False):
-        print(repr(self.model))
+        print(self.model)
         use_cuda = torch.cuda.is_available()
-        train_loader = get_data_loader(train=True)
+        train_loader = get_data_loader(self.dataset, train=True)
         if use_cuda:
             self.model.cuda()
         metrics = Metrics(self.model, train_loader, monitor_sign='all')
-        best_accuracy = metrics.load_best_accuracy(str(self.model), debug)
+        best_accuracy = self.load_best_accuracy(debug)
         metrics.log(f"Best train accuracy so far: {best_accuracy:.4f}")
         dataset_name = type(train_loader.dataset).__name__
         print(f"Training '{self.model}'. Best {dataset_name} train accuracy so far: {best_accuracy:.4f}")

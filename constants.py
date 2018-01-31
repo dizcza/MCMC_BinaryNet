@@ -1,3 +1,3 @@
-import os
+from pathlib import Path
 
-MODELS_DIR = os.path.join(os.path.dirname(__file__), "models_bin")
+MODELS_DIR = Path(__file__).with_name("models_bin")
