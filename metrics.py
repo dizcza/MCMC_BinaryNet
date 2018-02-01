@@ -1,4 +1,5 @@
 import time
+from typing import Union, List
 
 import numpy as np
 import torch
@@ -111,10 +112,16 @@ class Metrics(object):
             line = space * n_spaces + line
             self.viz.text(line, win='model', append=True)
 
-    def _draw_line(self, y, win: str, opts: dict):
+    def _draw_line(self, y: Union[float, List[float]], win: str, opts: dict):
         epoch_progress = self.batch_id / self.batches_in_epoch
-        self.viz.line(Y=np.array([y]),
-                      X=np.array([epoch_progress]),
+        if isinstance(y, list):
+            x = np.column_stack([epoch_progress] * len(y))
+            y = np.column_stack(y)
+        else:
+            x = np.array([epoch_progress])
+            y = np.array([y])
+        self.viz.line(Y=y,
+                      X=x,
                       win=win,
                       opts=opts,
                       update='append' if self.viz.win_exists(win) else None)
@@ -202,11 +209,17 @@ class Metrics(object):
 
     def update_gradients(self):
         for name, param in self._registered_params.items():
-            grad_norm = param.grad.data.norm(p=2)
-            self._draw_line(y=grad_norm, win=f'{name}.grad.norm', opts=dict(
+            grad = param.grad.data
+            y = grad.norm(p=2)
+            legend = ['norm']
+            if param.numel() > 1:
+                y = [y, grad.min(), grad.max()]
+                legend = ['norm', 'min', 'max']
+            self._draw_line(y=y, win=f'{name}.grad.norm', opts=dict(
                 xlabel='Epoch',
                 ylabel='Gradient L2 norm',
                 title=name,
+                legend=legend,
             ))
 
     def update_train_accuracy(self, accuracy: float, is_best=False):

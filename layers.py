@@ -46,8 +46,6 @@ class BinaryFunc(torch.autograd.Function):
 class BinaryDecorator(nn.Module):
     def __init__(self, layer: nn.Module):
         super().__init__()
-        matrix_proba = torch.FloatTensor(layer.weight.data.shape).fill_(0.5)
-        layer.weight.data = torch.bernoulli(matrix_proba) * 2 - 1
         for param in layer.parameters():
             param.is_binary = True
         self.layer = layer

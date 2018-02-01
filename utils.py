@@ -35,14 +35,14 @@ def get_data_loader(dataset: str, train=True, batch_size=256) -> torch.utils.dat
     elif dataset == "CIFAR10":
         dataset_cls = datasets.CIFAR10
         transform = transforms.Compose([
-            transforms.Grayscale(num_output_channels=1),
+            # transforms.Grayscale(num_output_channels=1),
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         ])
     else:
         raise NotImplementedError()
     dataset = dataset_cls('data', train=train, download=True, transform=transform)
-    loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
     return loader
 
 

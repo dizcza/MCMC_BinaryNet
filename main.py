@@ -41,15 +41,15 @@ class NetBinary(nn.Module):
 
 
 def train_binary():
-    conv_channels = [1, 20, 40]
-    fc_sizes = [1440, 900, 10]
+    conv_channels = [3, 10, 20]
+    fc_sizes = [720, 500, 10]
     model = NetBinary(conv_channels, fc_sizes)
     # for n, p in model.named_parameters():
     #     print(n)
     # quit()
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
-    scheduler = StepLRClamp(optimizer, step_size=2, gamma=0.5, min_lr=1e-8)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2, weight_decay=1e-8)
+    scheduler = StepLRClamp(optimizer, step_size=3, gamma=0.5, min_lr=1e-4)
     trainer = Trainer(model, criterion, optimizer, dataset="CIFAR10", scheduler=scheduler)
     trainer.train(n_epoch=200, debug=0)
 
