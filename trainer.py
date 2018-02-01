@@ -46,7 +46,7 @@ class Trainer(object):
         train_loader = get_data_loader(self.dataset, train=True)
         if use_cuda:
             self.model.cuda()
-        metrics = Metrics(self.model, train_loader, monitor_sign='binary')
+        metrics = Metrics(self.model, train_loader)
         for name, param in named_parameters_binary(self.model):
             metrics.register_param(name, param)
         scale_param = find_param_by_name(self.model, name_search='scale_layer.scale')

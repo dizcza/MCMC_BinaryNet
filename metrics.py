@@ -23,7 +23,7 @@ def timer(func):
         start = time.time()
         result = func(*args, **kwargs)
         elapsed = time.time() - start
-        print(f"{func.__name__}: {elapsed:.3f} sec")
+        print(f"{func.__name__}: {elapsed:e} sec")
         return result
 
     return wrapped
@@ -72,16 +72,10 @@ def test(train=False):
 class Metrics(object):
     # todo: plot gradients, feature maps
 
-    def __init__(self, model: nn.Module, loader: torch.utils.data.DataLoader, monitor_sign: str = 'binary'):
+    def __init__(self, model: nn.Module, loader: torch.utils.data.DataLoader):
         """
         :param model: network to monitor
         :param loader: DataLoader to get its size and name
-        :param monitor_sign:
-            What layers to monitor for sign changes after optimizer.step()?
-            Possible modes:
-             * 'all' - all layers
-             * 'binary' - binary layers
-             * None - don't monitor any layers for sign changes
         """
         dataset_name = loader.dataset.__class__.__name__
         self.viz = visdom.Visdom(env=f"{dataset_name} {time.strftime('%Y-%b-%d %H:%M')}")
@@ -89,16 +83,9 @@ class Metrics(object):
         self.total_binary_params = sum(map(torch.numel, parameters_binary(model)))
         self.batches_in_epoch = len(loader)
         self._update_step = max(len(loader) // 10, 1)
+        self.sign_flips = 0
         self.batch_id = 0
-        if monitor_sign == 'all':
-            named_params = model.named_parameters()
-        elif monitor_sign == 'binary':
-            named_params = named_parameters_binary(model)
-        else:
-            named_params = []
-        self.param_sign_before = {
-            name: param.data.sign() for name, param in named_params
-        }
+        self.param_sign_before = {}
         self._registered_params = {}
         self.log_model(model)
         n_params_full = sum(map(torch.numel, model.parameters()))
@@ -130,11 +117,11 @@ class Metrics(object):
         self.viz.text(f"{time.strftime('%Y-%b-%d %H:%M')} {text}", win='log', append=self.viz.win_exists(win='log'))
 
     def batch_finished(self, outputs: Variable, labels: Variable, loss: Variable):
+        self.update_signs()
         if self.batch_id % self._update_step == 0:
-            self.update_signs()
             self.update_batch_accuracy(batch_accuracy=get_softmax_accuracy(outputs, labels))
             self.update_loss(loss.data[0])
-            self.update_registered_params()
+            self.update_distribution()
             self.update_gradients()
         self.batch_id += 1
 
@@ -152,38 +139,18 @@ class Metrics(object):
         ))
 
     def update_signs(self):
-        if len(self.param_sign_before) == 0:
-            # don't monitor sign changes
-            return
-        named_parameters_binary_list = list(named_parameters_binary(self.model))
-        names_binary = set()
-        sign_flips = 0
-        if len(named_parameters_binary_list) > 0:
-            for name, param in named_parameters_binary_list:
-                names_binary.add(name)
-                new_sign = param.data.sign()
-                sign_flips += torch.sum((new_sign * self.param_sign_before[name]) < 0)
-                self.param_sign_before[name] = new_sign
-            self._draw_line(y=sign_flips * 100. / self.total_binary_params, win='sign_binary', opts=dict(
+        for name, param in self._registered_params.items():
+            self.sign_flips += torch.sum((param.data * self.param_sign_before[name]) < 0)
+            self.param_sign_before[name] = param.data.clone()
+        if self.batch_id % self._update_step == 0:
+            self.sign_flips /= self._update_step
+            self.sign_flips *= 100. / self.total_binary_params
+            self._draw_line(y=self.sign_flips, win='sign', opts=dict(
                 xlabel='Epoch',
                 ylabel='Sign flips, %',
-                title="[BINARY] Sign flips after optimizer.step()",
+                title="Sign flips after optimizer.step()",
             ))
-        for name, param in self.model.named_parameters():
-            if name in names_binary:
-                # already computed
-                continue
-            if name not in self.param_sign_before:
-                # we set don't monitor all layers signs
-                return
-            new_sign = param.data.sign()
-            sign_flips += torch.sum((new_sign * self.param_sign_before[name]) < 0)
-            self.param_sign_before[name] = new_sign
-        self._draw_line(y=sign_flips * 100. / self.total_binary_params, win='sign_all', opts=dict(
-            xlabel='Epoch',
-            ylabel='Sign flips, %',
-            title="[ALL LAYERS] Sign flips after optimizer.step()",
-        ))
+            self.sign_flips = 0
 
     def register_param(self, param_name: str, param: nn.Parameter = None):
         if param is None:
@@ -191,8 +158,9 @@ class Metrics(object):
         if param is None:
             raise ValueError(f"Illegal parameter name to register: {param_name}")
         self._registered_params[param_name] = param
+        self.param_sign_before[param_name] = param.data.clone()
 
-    def update_registered_params(self):
+    def update_distribution(self):
         for name, param in self._registered_params.items():
             if param.numel() == 1:
                 self._draw_line(y=param.data[0], win=name, opts=dict(
