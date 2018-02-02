@@ -68,6 +68,35 @@ class BinaryDecorator(nn.Module):
         return "[Binary]" + repr(self.layer)
 
 
+class SignPassGrad(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input):
+        return input.sign()
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output
+
+
+class BinaryDecoratorConv2d(BinaryDecorator):
+    def forward(self, x):
+        x_mean = torch.mean(torch.abs(x))
+        x = BinaryFunc.apply(x)
+        x = F.conv2d(x, SignPassGrad.apply(self.layer.weight), self.layer.bias, self.layer.stride,
+                     self.layer.padding, self.layer.dilation, self.layer.groups)
+        x = F.mul(x, x_mean)
+        return x
+
+
+class BinaryDecoratorLinear(BinaryDecorator):
+    def forward(self, x):
+        x_mean = torch.mean(torch.abs(x))
+        x = BinaryFunc.apply(x)
+        x = F.linear(x, SignPassGrad.apply(self.layer.weight), self.layer.bias)
+        x = F.mul(x, x_mean)
+        return x
+
+
 class ScaleFunc(torch.autograd.Function):
 
     @staticmethod

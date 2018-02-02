@@ -72,25 +72,28 @@ def test(train=False):
 class Metrics(object):
     # todo: plot gradients, feature maps
 
-    def __init__(self, model: nn.Module, loader: torch.utils.data.DataLoader):
+    def __init__(self, model: nn.Module, dataset_name: str, batches_in_epoch: int):
         """
         :param model: network to monitor
-        :param loader: DataLoader to get its size and name
+        :param dataset_name: 'MNIST', 'CIFAR10', etc.
+        :param batches_in_epoch: number of batches in one epoch
         """
-        dataset_name = loader.dataset.__class__.__name__
         self.viz = visdom.Visdom(env=f"{dataset_name} {time.strftime('%Y-%b-%d %H:%M')}")
         self.model = model
-        self.total_binary_params = sum(map(torch.numel, parameters_binary(model)))
-        self.batches_in_epoch = len(loader)
-        self._update_step = max(len(loader) // 10, 1)
+        self.batches_in_epoch = batches_in_epoch
+        self._update_step = max(batches_in_epoch // 10, 1)
         self.sign_flips = 0
         self.batch_id = 0
         self.param_sign_before = {}
         self._registered_params = {}
         self.log_model(model)
-        n_params_full = sum(map(torch.numel, model.parameters()))
-        self.log(f"Parameters total={n_params_full:e}, "
-                 f"binary={self.total_binary_params:e} ({100. * self.total_binary_params / n_params_full:.2f} %)")
+        self.log_binary_ratio()
+
+    def log_binary_ratio(self):
+        n_params_full = sum(map(torch.numel, self.model.parameters()))
+        n_params_binary = sum(map(torch.numel, parameters_binary(self.model)))
+        self.log(f"Parameters binary={n_params_binary:e} / total={n_params_full}"
+                 f" = {100. * n_params_binary / n_params_full:.2f} %")
 
     def log_model(self, model: nn.Module, space='-'):
         self.viz.text("", win='model')
@@ -139,12 +142,16 @@ class Metrics(object):
         ))
 
     def update_signs(self):
+        if len(self._registered_params) == 0:
+            return
+        registered_count = 0
         for name, param in self._registered_params.items():
+            registered_count += param.numel()
             self.sign_flips += torch.sum((param.data * self.param_sign_before[name]) < 0)
             self.param_sign_before[name] = param.data.clone()
         if self.batch_id % self._update_step == 0:
             self.sign_flips /= self._update_step
-            self.sign_flips *= 100. / self.total_binary_params
+            self.sign_flips *= 100. / registered_count
             self._draw_line(y=self.sign_flips, win='sign', opts=dict(
                 xlabel='Epoch',
                 ylabel='Sign flips, %',
@@ -177,6 +184,8 @@ class Metrics(object):
 
     def update_gradients(self):
         for name, param in self._registered_params.items():
+            if param.grad is None:
+                continue
             grad = param.grad.data
             y = grad.norm(p=2)
             legend = ['norm']

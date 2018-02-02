@@ -4,8 +4,8 @@ import torch.utils.data
 
 from layers import ScaleLayer, BinaryDecorator, binarize_model
 from metrics import test
-from trainer import Trainer
-from utils import StepLRClamp
+from trainer import TrainerGradFullPrecision, TrainerMCMC, TrainerGradBinary
+from utils import StepLRClamp, load_model
 
 
 class NetBinary(nn.Module):
@@ -40,9 +40,9 @@ class NetBinary(nn.Module):
         return x
 
 
-def train_binary():
-    conv_channels = [3, 10, 20]
-    fc_sizes = [720, 500, 10]
+def train_gradient():
+    conv_channels = []
+    fc_sizes = [28**2, 10]
     model = NetBinary(conv_channels, fc_sizes)
     # for n, p in model.named_parameters():
     #     print(n)
@@ -50,10 +50,48 @@ def train_binary():
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-2, weight_decay=1e-8)
     scheduler = StepLRClamp(optimizer, step_size=3, gamma=0.5, min_lr=1e-4)
-    trainer = Trainer(model, criterion, optimizer, dataset="CIFAR10", scheduler=scheduler)
+    trainer = TrainerGradBinary(model, criterion, dataset_name="MNIST", optimizer=optimizer, scheduler=scheduler)
     trainer.train(n_epoch=200, debug=0)
 
 
+def train_mcmc(dataset_name="MNIST"):
+    conv_channels = []
+    fc_sizes = [28**2, 10]
+    model = NetBinary(conv_channels, fc_sizes)
+    # model_pretrained = load_model(dataset_name, model_name="NetBinary")
+    # model.load_state_dict(model_pretrained.state_dict())
+    # del model_pretrained
+    trainer = TrainerMCMC(model,
+                          criterion=nn.CrossEntropyLoss(),
+                          dataset_name=dataset_name,
+                          temperature=1e-3,
+                          flip_ratio=3*1e-3)
+    trainer.train(n_epoch=100, debug=0)
+
+
+class FullPrecisionNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.linear = nn.Linear(28**2, 10)
+
+    def forward(self, x):
+        x = x.view(x.shape[0], -1)
+        return self.linear(x)
+
+
+def train_full_precision(dataset_name="MNIST"):
+    model = FullPrecisionNet()
+    optimizer = torch.optim.SGD(model.parameters(), lr=1e-1)
+    trainer = TrainerGradFullPrecision(model,
+                                       criterion=nn.CrossEntropyLoss(),
+                                       dataset_name=dataset_name,
+                                       optimizer=optimizer,
+                                       scheduler=StepLRClamp(optimizer, step_size=5, min_lr=1e-4))
+    trainer.train(n_epoch=100, debug=1)
+
+
 if __name__ == '__main__':
-    train_binary()
-    test(train=True)
+    # train_gradient()
+    train_mcmc()
+    # test(train=True)
+    # train_full_precision()
