@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.utils.data
 
 from layers import ScaleLayer, BinaryDecorator, binarize_model
-from metrics import test
+from monitor import test
 from trainer import TrainerGradFullPrecision, TrainerMCMC, TrainerGradBinary
 from utils import StepLRClamp, load_model
 

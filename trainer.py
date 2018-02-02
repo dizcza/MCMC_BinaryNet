@@ -6,7 +6,7 @@ from torch.autograd import Variable
 from tqdm import tqdm
 
 from constants import MODELS_DIR
-from metrics import Metrics, calc_accuracy
+from monitor import Monitor, calc_accuracy
 from utils import get_data_loader, named_parameters_binary, parameters_binary, load_model, find_param_by_name
 
 
@@ -17,7 +17,7 @@ class _Trainer(object):
         self.criterion = criterion
         self.dataset_name = dataset_name
         self.train_loader = get_data_loader(dataset_name, train=True)
-        self.metrics = Metrics(model, dataset_name, batches_in_epoch=len(self.train_loader))
+        self.monitor = Monitor(model, dataset_name, batches_in_epoch=len(self.train_loader))
 
     def save_model(self, accuracy: float = None):
         model_path = MODELS_DIR.joinpath(self.dataset_name, self.model.__class__.__name__).with_suffix('.pt')
@@ -54,12 +54,12 @@ class _Trainer(object):
         if use_cuda:
             self.model.cuda()
         for name, param in named_parameters_binary(self.model):
-            self.metrics.register_param(name, param)
+            self.monitor.register_param(name, param)
         scale_param = find_param_by_name(self.model, name_search='scale_layer.scale')
         if scale_param is not None:
-            self.metrics.register_param(param_name='scale_layer.scale', param=scale_param)
+            self.monitor.register_param(param_name='scale_layer.scale', param=scale_param)
         best_accuracy = self.load_best_accuracy(debug)
-        self.metrics.log(f"Best train accuracy so far: {best_accuracy:.4f}")
+        self.monitor.log(f"Best train accuracy so far: {best_accuracy:.4f}")
         print(f"Training '{self.model}'. Best {self.dataset_name} train accuracy so far: {best_accuracy:.4f}")
 
         for epoch in range(n_epoch):
@@ -74,12 +74,12 @@ class _Trainer(object):
                     labels = labels.cuda()
 
                 outputs, loss = self._train_batch(images, labels)
-                self.metrics.batch_finished(outputs, labels, loss)
+                self.monitor.batch_finished(outputs, labels, loss)
 
             if not debug:
                 accuracy = calc_accuracy(self.model, self.train_loader)
                 is_best = accuracy > best_accuracy
-                self.metrics.update_train_accuracy(accuracy, is_best)
+                self.monitor.update_train_accuracy(accuracy, is_best)
                 if is_best:
                     self.save_model(accuracy)
                     best_accuracy = accuracy
@@ -103,7 +103,7 @@ class TrainerGradFullPrecision(_Trainer):
         return outputs, loss
 
     def _epoch_started(self, epoch):
-        self.metrics.log(f"Epoch {epoch}. Learning rate {self.scheduler.get_lr()}")
+        self.monitor.log(f"Epoch {epoch}. Learning rate {self.scheduler.get_lr()}")
 
     def _epoch_finished(self, epoch):
         if self.scheduler is not None:
@@ -123,7 +123,7 @@ class TrainerMCMC(_Trainer):
         super().__init__(model, criterion, dataset_name)
         self.temperature = temperature
         self.flip_ratio = flip_ratio
-        self.metrics.log(f"Temperature: {self.temperature}; flip ratio: {flip_ratio}")
+        self.monitor.log(f"Temperature: {self.temperature}; flip ratio: {flip_ratio}")
         self.accepted_count = 0
         self.update_calls = 0
         for param in model.parameters():
@@ -145,7 +145,7 @@ class TrainerMCMC(_Trainer):
         outputs = self.model(images)
         loss = self.criterion(outputs, labels)
         loss_delta = (loss - loss_orig).data
-        self.metrics._draw_line(y=loss_delta[0], win='loss_delta', opts=dict(
+        self.monitor._draw_line(y=loss_delta[0], win='loss_delta', opts=dict(
             xlabel='Epoch',
             ylabel='ΔL',
             title='loss_flipped - loss_orig'
@@ -161,7 +161,7 @@ class TrainerMCMC(_Trainer):
             loss = loss_orig
         self.update_calls += 1
 
-        self.metrics._draw_line(y=self.get_acceptance_ratio(), win='accp', opts=dict(
+        self.monitor._draw_line(y=self.get_acceptance_ratio(), win='accp', opts=dict(
             xlabel='Epoch',
             ylabel='Acceptance ratio',
             title='MCMC accepted / total_tries'

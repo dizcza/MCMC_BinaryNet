@@ -69,7 +69,7 @@ def test(train=False):
                 print(f"Skipped evaluating {model_path} model")
 
 
-class Metrics(object):
+class Monitor(object):
     # todo: plot gradients, feature maps
 
     def __init__(self, model: nn.Module, dataset_name: str, batches_in_epoch: int):
