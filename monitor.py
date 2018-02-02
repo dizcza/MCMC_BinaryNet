@@ -53,20 +53,10 @@ def calc_accuracy(model: nn.Module, loader: torch.utils.data.DataLoader):
     return correct_count / total_count
 
 
-def test(train=False):
-    print(f"{'train' if train else 'test'} accuracy:")
-    for dataset_path in MODELS_DIR.iterdir():
-        if not dataset_path.is_dir():
-            continue
-        print(f"\t{dataset_path.name}:")
-        for model_path in dataset_path.iterdir():
-            test_loader = get_data_loader(dataset=dataset_path.name, train=train)
-            try:
-                model = torch.load(model_path)
-                accur = calc_accuracy(model, test_loader)
-                print(f"\t\t{model}: {accur:.4f}")
-            except Exception:
-                print(f"Skipped evaluating {model_path} model")
+def test(model: nn.Module, dataset_name: str,  train=False):
+    loader = get_data_loader(dataset=dataset_name, train=train)
+    accur = calc_accuracy(model, loader)
+    print(f"Model={model.__class__.__name__} dataset={dataset_name} train={train} accuracy: {accur:.4f}")
 
 
 class Monitor(object):

@@ -1,4 +1,6 @@
+import copy
 import random
+
 import torch
 import torch.nn as nn
 import torch.utils.data
@@ -7,7 +9,7 @@ from tqdm import tqdm
 
 from constants import MODELS_DIR
 from monitor import Monitor, calc_accuracy
-from utils import get_data_loader, named_parameters_binary, parameters_binary, load_model, find_param_by_name
+from utils import get_data_loader, named_parameters_binary, parameters_binary, load_model_state, find_param_by_name
 
 
 class _Trainer(object):
@@ -22,7 +24,7 @@ class _Trainer(object):
     def save_model(self, accuracy: float = None):
         model_path = MODELS_DIR.joinpath(self.dataset_name, self.model.__class__.__name__).with_suffix('.pt')
         model_path.parent.mkdir(exist_ok=True, parents=True)
-        torch.save(self.model, model_path)
+        torch.save(self.model.state_dict(), model_path)
         msg = f"Saved to {model_path}"
         if accuracy is not None:
             msg += f" (train accuracy: {accuracy:.4f})"
@@ -33,10 +35,17 @@ class _Trainer(object):
         best_accuracy = 0.
         if not debug:
             try:
-                loaded_model = load_model(self.dataset_name, self.model.__class__.__name__)
+                model_state = load_model_state(self.dataset_name, self.model.__class__.__name__)
+                loaded_model = copy.deepcopy(self.model)
+                loaded_model.load_state_dict(model_state)
+                loaded_model.eval()
+                for param in loaded_model.parameters():
+                    param.requires_grad = False
+                    param.volatile = True
                 best_accuracy = calc_accuracy(loaded_model, train_loader)
-            except Exception:
-                print(f"Couldn't estimate the best accuracy for {self.model}. Reset to 0.")
+                del loaded_model
+            except Exception as e:
+                print(f"Couldn't estimate the best accuracy for {self.model.__class__.__name__}. Reset to 0.")
         return best_accuracy
 
     def _train_batch(self, images, labels):
@@ -60,7 +69,8 @@ class _Trainer(object):
             self.monitor.register_param(param_name='scale_layer.scale', param=scale_param)
         best_accuracy = self.load_best_accuracy(debug)
         self.monitor.log(f"Best train accuracy so far: {best_accuracy:.4f}")
-        print(f"Training '{self.model}'. Best {self.dataset_name} train accuracy so far: {best_accuracy:.4f}")
+        print(f"Training '{self.model.__class__.__name__}'. "
+              f"Best {self.dataset_name} train accuracy so far: {best_accuracy:.4f}")
 
         for epoch in range(n_epoch):
             self._epoch_started(epoch)

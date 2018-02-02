@@ -5,7 +5,7 @@ import torch.utils.data
 from layers import ScaleLayer, BinaryDecorator, binarize_model
 from monitor import test
 from trainer import TrainerGradFullPrecision, TrainerMCMC, TrainerGradBinary
-from utils import StepLRClamp, load_model
+from utils import StepLRClamp, load_model_state
 
 
 class NetBinary(nn.Module):

@@ -46,7 +46,7 @@ def get_data_loader(dataset: str, train=True, batch_size=256) -> torch.utils.dat
     return loader
 
 
-def load_model(dataset_name: str, model_name: str) -> Union[nn.Module, None]:
+def load_model_state(dataset_name: str, model_name: str):
     model_path = MODELS_DIR.joinpath(dataset_name, Path(model_name).with_suffix('.pt'))
     if not model_path.exists():
         return None
