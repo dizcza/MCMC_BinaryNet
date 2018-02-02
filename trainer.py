@@ -140,7 +140,7 @@ class TrainerMCMC(_Trainer):
         outputs_orig = self.model(images)
         loss_orig = self.criterion(outputs_orig, labels)
 
-        name_modified, data_orig = flip_signs(named_parameters_binary(self.model), self.flip_ratio)
+        param_modified, data_orig = flip_signs(parameters_binary(self.model), self.flip_ratio)
 
         outputs = self.model(images)
         loss = self.criterion(outputs, labels)
@@ -156,7 +156,7 @@ class TrainerMCMC(_Trainer):
             self.accepted_count += 1
         else:
             # reject
-            revert(self.model, name_modified, data_orig)
+            param_modified.data = data_orig
             outputs = outputs_orig
             loss = loss_orig
         self.update_calls += 1
@@ -175,17 +175,11 @@ class TrainerMCMC(_Trainer):
             self.temperature /= 2.7**3
 
 
-def flip_signs(named_params, flip_ratio=0.1):
-    name, param = random.choice(list(named_params))
-    idx_to_flip = torch.rand(param.data.shape) < flip_ratio
-    if param.data.is_cuda:
+def flip_signs(parameters, flip_ratio=0.1):
+    param_modified = random.choice(list(parameters))
+    idx_to_flip = torch.rand(param_modified.data.shape) < flip_ratio
+    if param_modified.data.is_cuda:
         idx_to_flip = idx_to_flip.cuda()
-    data_orig = param.data.clone()
-    param.data[idx_to_flip] *= -1
-    return name, data_orig
-
-
-def revert(model, name, data_orig):
-    param_changed = find_param_by_name(model, name)
-    assert param_changed is not None, f"Didn't find the param {name}"
-    param_changed.data = data_orig
+    data_orig = param_modified.data.clone()
+    param_modified.data[idx_to_flip] *= -1
+    return param_modified, data_orig
