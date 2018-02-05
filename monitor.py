@@ -1,4 +1,5 @@
 import time
+import math
 from typing import Union, List
 
 import numpy as np
@@ -9,7 +10,7 @@ import visdom
 from torch.autograd import Variable
 
 from constants import MODELS_DIR
-from utils import get_data_loader, parameters_binary, named_parameters_binary, find_param_by_name
+from utils import get_data_loader, parameters_binary, named_parameters_binary, find_param_by_name, VarianceOnline
 
 
 def get_softmax_accuracy(outputs, labels):
@@ -60,7 +61,7 @@ def test(model: nn.Module, dataset_name: str,  train=False):
 
 
 class Monitor(object):
-    # todo: plot gradients, feature maps
+    # todo: feature maps
 
     def __init__(self, model: nn.Module, dataset_name: str, batches_in_epoch: int):
         """
@@ -71,13 +72,14 @@ class Monitor(object):
         self.viz = visdom.Visdom(env=f"{dataset_name} {time.strftime('%Y-%b-%d %H:%M')}")
         self.model = model
         self.batches_in_epoch = batches_in_epoch
-        self._update_step = max(batches_in_epoch // 10, 1)
+        self._update_step = max(batches_in_epoch // 100000, 1)
         self.sign_flips = 0
         self.batch_id = 0
         self.param_sign_before = {}
         self._registered_params = {}
         self.log_model(model)
         self.log_binary_ratio()
+        self.grad_variance = {}
 
     def log_binary_ratio(self):
         n_params_full = sum(map(torch.numel, self.model.parameters()))
@@ -93,13 +95,14 @@ class Monitor(object):
             self.viz.text(line, win='model', append=True)
 
     def _draw_line(self, y: Union[float, List[float]], win: str, opts: dict):
+        y = np.array([y])
+        size = y.shape[-1]
+        if size == 0:
+            return
+        if y.ndim > 1 and size == 1:
+            y = y[0]
         epoch_progress = self.batch_id / self.batches_in_epoch
-        if isinstance(y, list):
-            x = np.column_stack([epoch_progress] * len(y))
-            y = np.column_stack(y)
-        else:
-            x = np.array([epoch_progress])
-            y = np.array([y])
+        x = np.full_like(y, epoch_progress)
         self.viz.line(Y=y,
                       X=x,
                       win=win,
@@ -116,6 +119,7 @@ class Monitor(object):
             self.update_loss(loss.data[0])
             self.update_distribution()
             self.update_gradients()
+            self.update_gradients_variance()
         self.batch_id += 1
 
     def update_batch_accuracy(self, batch_accuracy: float):
@@ -156,6 +160,7 @@ class Monitor(object):
             raise ValueError(f"Illegal parameter name to register: {param_name}")
         self._registered_params[param_name] = param
         self.param_sign_before[param_name] = param.data.clone()
+        self.grad_variance[param_name] = VarianceOnline()
 
     def update_distribution(self):
         for name, param in self._registered_params.items():
@@ -172,22 +177,35 @@ class Monitor(object):
                     title=name,
                 ))
 
-    def update_gradients(self):
+    def update_gradients_variance(self):
+        means = []
+        legend = []
         for name, param in self._registered_params.items():
             if param.grad is None:
                 continue
-            grad = param.grad.data
-            y = grad.norm(p=2)
-            legend = ['norm']
-            if param.numel() > 1:
-                y = [y, grad.min(), grad.max()]
-                legend = ['norm', 'min', 'max']
-            self._draw_line(y=y, win=f'{name}.grad.norm', opts=dict(
-                xlabel='Epoch',
-                ylabel='Gradient L2 norm',
-                title=name,
-                legend=legend,
-            ))
+            self.grad_variance[name].update(param.grad.data)
+            mean, std = self.grad_variance[name].get_mean_std()
+            means.extend([mean.norm(), std.norm()])
+            legend.extend([f"{name} mean", f"{name} std"])
+        self._draw_line(y=means, win='grad.mean+std', opts=dict(
+            xlabel='Epoch',
+            ylabel='Value',
+            legend=legend
+        ))
+
+    def update_gradients(self):
+        norms = []
+        legend = []
+        for name, param in self._registered_params.items():
+            if param.grad is None:
+                continue
+            norms.append(param.grad.data.norm(p=2) / math.sqrt(param.numel()))
+            legend.append(name)
+        self._draw_line(y=norms, win='grad.norm', opts=dict(
+            xlabel='Epoch',
+            ylabel='Gradient L2 norm / sqrt(n)',
+            legend=legend,
+        ))
 
     def update_train_accuracy(self, accuracy: float, is_best=False):
         self._draw_line(accuracy, win='train_accuracy', opts=dict(
