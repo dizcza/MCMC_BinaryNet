@@ -29,13 +29,13 @@ class NetBinary(nn.Module):
             fc_layers.append(layer)
             fc_layers.append(nn.PReLU())
         self.fc_sequential = nn.Sequential(*fc_layers)
-        self.scale_layer = ScaleLayer()
+        # self.scale_layer = ScaleLayer(size=fc_sizes[-1])
 
     def forward(self, x):
         x = self.conv_sequential(x)
         x = x.view(x.shape[0], -1)
         x = self.fc_sequential(x)
-        x = self.scale_layer(x)
+        # x = self.scale_layer(x)
         return x
 
 
@@ -44,12 +44,13 @@ def train_gradient():
     fc_sizes = [28**2, 10]
     model = NetBinary(conv_channels, fc_sizes)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
-    scheduler = StepLRClamp(optimizer, step_size=3, gamma=0.5, min_lr=1e-4)
+    scheduler = StepLRClamp(optimizer, step_size=3, gamma=0.5, min_lr=1e-5)
     trainer = TrainerGradBinary(model,
                                 criterion=nn.CrossEntropyLoss(),
                                 dataset_name="MNIST",
                                 optimizer=optimizer,
                                 scheduler=scheduler)
+    # trainer.monitor.register_param("scale", model.scale_layer.scale)
     trainer.train(n_epoch=200, debug=0)
 
 

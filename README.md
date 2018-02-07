@@ -2,6 +2,12 @@
 
 This repo shows an alternative optimization of binary neural nets that uses forward pass only. No backward passes. No gradients. Instead, we can use Gibbs sampling to randomly select `flip_ratio` weights (connections) in any binary network and flip their signs (multiply by `-1`). Then, we can accept or reject a new candidate (new model weights) at MCMC step. Convergence is determined by `temperature` that slowly decreases with time.
 
+## Requirements
+
+* Python 3.5+
+* [requirements.txt](requirements.txt)
+
+
 ## Quick start
 
 ```

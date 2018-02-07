@@ -1,6 +1,7 @@
 import copy
 import random
 import math
+from typing import Iterable
 
 import torch
 import torch.nn as nn
@@ -52,7 +53,8 @@ class _Trainer(object):
         return best_accuracy
 
     def _register_monitor_parameters(self):
-        pass
+        for name, param in named_parameters_binary(self.model):
+            self.monitor.register_param(name, param)
 
     def _train_batch(self, images, labels):
         raise NotImplementedError()
@@ -68,11 +70,6 @@ class _Trainer(object):
         use_cuda = torch.cuda.is_available()
         if use_cuda:
             self.model.cuda()
-        for name, param in named_parameters_binary(self.model):
-            self.monitor.register_param(name, param)
-        scale_param = find_param_by_name(self.model, name_search='scale_layer.scale')
-        if scale_param is not None:
-            self.monitor.register_param(param_name='scale_layer.scale', param=scale_param)
         best_accuracy = self.load_best_accuracy(debug)
         self.monitor.log(f"Best train accuracy so far: {best_accuracy:.4f}")
         print(f"Training '{self.model.__class__.__name__}'. "
@@ -136,15 +133,15 @@ class TrainerGradFullPrecision(_Trainer):
 
 class TrainerGradBinary(TrainerGradFullPrecision):
 
-    def _register_monitor_parameters(self):
-        for name, param in named_parameters_binary(self.model):
-            self.monitor.register_param(name, param)
-
     def _train_batch(self, images, labels):
         outputs, loss = super()._train_batch(images, labels)
         for param in parameters_binary(self.model):
             param.data.clamp_(min=-1, max=1)
         return outputs, loss
+
+    def _register_monitor_parameters(self):
+        for name, param in named_parameters_binary(self.model):
+            self.monitor.register_param(name, param)
 
 
 class TrainerMCMC(_Trainer):
@@ -169,7 +166,7 @@ class TrainerMCMC(_Trainer):
         outputs_orig = self.model(images)
         loss_orig = self.criterion(outputs_orig, labels)
 
-        param_modified, data_orig = flip_signs(parameters_binary(self.model), self.flip_ratio)
+        param_modified, data_orig = self.flip_signs(parameters_binary(self.model))
 
         outputs = self.model(images)
         loss = self.criterion(outputs, labels)
@@ -188,12 +185,6 @@ class TrainerMCMC(_Trainer):
             loss = loss_orig
         self.update_calls += 1
 
-        self.monitor._draw_line(y=self.get_acceptance_ratio(), win='accp', opts=dict(
-            xlabel='Epoch',
-            ylabel='Acceptance ratio',
-            title='MCMC accepted / total_tries'
-        ))
-
         self.is_finished &= self.temperature < 1e-7
 
         return outputs, loss
@@ -204,12 +195,19 @@ class TrainerMCMC(_Trainer):
             self.flip_ratio = max(self.flip_ratio / 3, 1e-4)
             self.temperature /= 2.7**3
 
+    def flip_signs(self, parameters: Iterable[nn.Parameter]):
+        param_modified = random.choice(list(parameters))
+        idx_to_flip = torch.rand(param_modified.data.shape) < self.flip_ratio
+        if param_modified.data.is_cuda:
+            idx_to_flip = idx_to_flip.cuda()
+        data_orig = param_modified.data.clone()
+        param_modified.data[idx_to_flip] *= -1
+        return param_modified, data_orig
 
-def flip_signs(parameters, flip_ratio=0.1):
-    param_modified = random.choice(list(parameters))
-    idx_to_flip = torch.rand(param_modified.data.shape) < flip_ratio
-    if param_modified.data.is_cuda:
-        idx_to_flip = idx_to_flip.cuda()
-    data_orig = param_modified.data.clone()
-    param_modified.data[idx_to_flip] *= -1
-    return param_modified, data_orig
+    def _register_monitor_parameters(self):
+        super()._register_monitor_parameters()
+        self.monitor.register_func(self.get_acceptance_ratio, opts=dict(
+            xlabel='Epoch',
+            ylabel='Acceptance ratio',
+            title='MCMC accepted / total_tries'
+        ))

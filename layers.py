@@ -68,27 +68,14 @@ class BinaryDecorator(nn.Module):
         return "[Binary]" + repr(self.layer)
 
 
-class ScaleFunc(torch.autograd.Function):
-
-    @staticmethod
-    def forward(ctx, input, scale):
-        ctx.save_for_backward(input, scale)
-        return input * scale
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        input, scale = ctx.saved_variables
-        return grad_output * scale, torch.mean(grad_output * input)
-
-
 class ScaleLayer(nn.Module):
 
-    def __init__(self, init_value=1e-3):
+    def __init__(self, size: int, init_value=1e-3):
         super().__init__()
-        self.scale = nn.Parameter(torch.FloatTensor(1).fill_(init_value))
+        self.scale = nn.Parameter(torch.FloatTensor(size).fill_(init_value))
 
-    def forward(self, input):
-        return ScaleFunc.apply(input, self.scale)
+    def forward(self, x):
+        return F.mul(x, self.scale)
 
     def __repr__(self):
-        return self.__class__.__name__ + f"({self.scale.numel()} parameters)"
+        return self.__class__.__name__ + f"(size={self.scale.numel()})"

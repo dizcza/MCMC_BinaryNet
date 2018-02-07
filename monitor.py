@@ -1,6 +1,6 @@
 import time
 import math
-from typing import Union, List
+from typing import Union, List, Dict, Callable
 
 import numpy as np
 import torch
@@ -9,8 +9,7 @@ import torch.utils.data
 import visdom
 from torch.autograd import Variable
 
-from constants import MODELS_DIR
-from utils import get_data_loader, parameters_binary, named_parameters_binary, find_param_by_name, VarianceOnline
+from utils import get_data_loader, parameters_binary, find_param_by_name
 
 
 def get_softmax_accuracy(outputs, labels):
@@ -60,6 +59,72 @@ def test(model: nn.Module, dataset_name: str,  train=False):
     print(f"Model={model.__class__.__name__} dataset={dataset_name} train={train} accuracy: {accur:.4f}")
 
 
+class VarianceOnline(object):
+
+    """
+    Online updating sample mean and unbiased variance in a single pass.
+    """
+
+    def __init__(self):
+        self.mean = None
+        self.var = None
+        self.count = 0
+
+    def update(self, new_tensor: torch.FloatTensor):
+        self.count += 1
+        if self.mean is None:
+            self.mean = new_tensor.clone()
+            self.var = torch.zeros_like(self.mean)
+        else:
+            self.var = (self.count - 2) / (self.count - 1) * self.var + torch.pow(new_tensor - self.mean, 2) / self.count
+            self.mean += (new_tensor - self.mean) / self.count
+
+    def get_mean_std(self):
+        if self.mean is None:
+            return None, None
+        else:
+            return self.mean.clone(), torch.sqrt(self.var)
+
+
+class UpdateTimer(object):
+
+    def __init__(self, max_skip: int):
+        self.max_skip = max_skip
+        self.next_update = 1
+
+    def need_update(self, batch_id: int):
+        if batch_id >= self.next_update:
+            self.next_update = min(int((batch_id + 1) ** 1.1), batch_id + self.max_skip)
+            return True
+        return False
+
+
+class SignMonitor(object):
+    def __init__(self):
+        self.sign_flips = 0
+        self.calls = 0
+        self.param_sign_before = {}
+
+    def batch_finished(self, named_params: Dict[str, nn.Parameter]):
+        self.calls += 1
+        for name, param in named_params.items():
+            self.sign_flips += torch.sum((param.data * self.param_sign_before[name]) < 0)
+            self.param_sign_before[name] = param.data.clone()
+
+    def get_sign_flips(self):
+        if len(self.param_sign_before) == 0:
+            # haven't registered any param yet
+            return None
+        param_count = sum(map(torch.numel, self.param_sign_before.values()))
+        flips = self.sign_flips
+        flips /= param_count  # per param
+        flips /= self.calls  # per update
+        flips *= 100.  # percents
+        self.sign_flips = 0
+        self.calls = 0
+        return flips
+
+
 class Monitor(object):
     # todo: feature maps
 
@@ -72,11 +137,11 @@ class Monitor(object):
         self.viz = visdom.Visdom(env=f"{dataset_name} {time.strftime('%Y-%b-%d %H:%M')}")
         self.model = model
         self.batches_in_epoch = batches_in_epoch
-        self._update_step = max(batches_in_epoch // 10, 1)
-        self.sign_flips = 0
         self.batch_id = 0
-        self.param_sign_before = {}
         self._registered_params = {}
+        self._registered_functions = []
+        self.sign_monitor = SignMonitor()
+        self.timer_update = UpdateTimer(max_skip=batches_in_epoch // 2)
         self.log_model(model)
         self.log_binary_ratio()
 
@@ -112,12 +177,19 @@ class Monitor(object):
         self.viz.text(f"{time.strftime('%Y-%b-%d %H:%M')} {text}", win='log', append=self.viz.win_exists(win='log'))
 
     def batch_finished(self, outputs: Variable, labels: Variable, loss: Variable):
-        self.update_signs()
-        if self.batch_id % self._update_step == 0:
+        self.sign_monitor.batch_finished(self._registered_params)
+        if self.timer_update.need_update(self.batch_id):
             self.update_batch_accuracy(batch_accuracy=get_softmax_accuracy(outputs, labels))
             self.update_loss(loss.data[0])
             self.update_distribution()
             self.update_gradients()
+            self._draw_line(y=self.sign_monitor.get_sign_flips(), win='sign', opts=dict(
+                xlabel='Epoch',
+                ylabel='Sign flips, %',
+                title="Sign flips after optimizer.step()",
+            ))
+            for func, opts in self._registered_functions:
+                self._draw_line(y=func(), win=func.__name__, opts=opts)
         self.batch_id += 1
 
     def update_batch_accuracy(self, batch_accuracy: float):
@@ -133,31 +205,16 @@ class Monitor(object):
             ylabel='Loss',
         ))
 
-    def update_signs(self):
-        if len(self._registered_params) == 0:
-            return
-        registered_count = 0
-        for name, param in self._registered_params.items():
-            registered_count += param.numel()
-            self.sign_flips += torch.sum((param.data * self.param_sign_before[name]) < 0)
-            self.param_sign_before[name] = param.data.clone()
-        if self.batch_id % self._update_step == 0:
-            self.sign_flips /= self._update_step
-            self.sign_flips *= 100. / registered_count
-            self._draw_line(y=self.sign_flips, win='sign', opts=dict(
-                xlabel='Epoch',
-                ylabel='Sign flips, %',
-                title="Sign flips after optimizer.step()",
-            ))
-            self.sign_flips = 0
-
     def register_param(self, param_name: str, param: nn.Parameter = None):
         if param is None:
             param = find_param_by_name(self.model, param_name)
         if param is None:
             raise ValueError(f"Illegal parameter name to register: {param_name}")
         self._registered_params[param_name] = param
-        self.param_sign_before[param_name] = param.data.clone()
+        self.sign_monitor.param_sign_before[param_name] = param.data.clone()
+
+    def register_func(self, func: Callable, opts: dict = None):
+        self._registered_functions.append((func, opts))
 
     def update_distribution(self):
         for name, param in self._registered_params.items():
