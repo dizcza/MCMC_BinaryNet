@@ -3,9 +3,8 @@ import torch.nn as nn
 import torch.utils.data
 
 from layers import ScaleLayer, BinaryDecorator, binarize_model
-from monitor import test
 from trainer import TrainerGradFullPrecision, TrainerMCMC, TrainerGradBinary
-from utils import StepLRClamp, load_model_state
+from utils import StepLRClamp
 
 
 class NetBinary(nn.Module):
@@ -44,13 +43,13 @@ def train_gradient():
     conv_channels = []
     fc_sizes = [28**2, 10]
     model = NetBinary(conv_channels, fc_sizes)
-    # for n, p in model.named_parameters():
-    #     print(n)
-    # quit()
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2, weight_decay=1e-8)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
     scheduler = StepLRClamp(optimizer, step_size=3, gamma=0.5, min_lr=1e-4)
-    trainer = TrainerGradBinary(model, criterion, dataset_name="MNIST", optimizer=optimizer, scheduler=scheduler)
+    trainer = TrainerGradBinary(model,
+                                criterion=nn.CrossEntropyLoss(),
+                                dataset_name="MNIST",
+                                optimizer=optimizer,
+                                scheduler=scheduler)
     trainer.train(n_epoch=200, debug=0)
 
 
@@ -58,9 +57,6 @@ def train_mcmc(dataset_name="MNIST"):
     conv_channels = []
     fc_sizes = [28**2, 10]
     model = NetBinary(conv_channels, fc_sizes)
-    # model_pretrained = load_model(dataset_name, model_name="NetBinary")
-    # model.load_state_dict(model_pretrained.state_dict())
-    # del model_pretrained
     trainer = TrainerMCMC(model,
                           criterion=nn.CrossEntropyLoss(),
                           dataset_name=dataset_name,
@@ -72,7 +68,10 @@ def train_mcmc(dataset_name="MNIST"):
 class FullPrecisionNet(nn.Module):
     def __init__(self):
         super().__init__()
-        self.linear = nn.Linear(28**2, 10)
+        self.linear = nn.Sequential(
+            nn.Linear(28**2, 10, bias=False),
+            # nn.Linear(100, 10)
+        )
 
     def forward(self, x):
         x = x.view(x.shape[0], -1)
@@ -82,16 +81,16 @@ class FullPrecisionNet(nn.Module):
 def train_full_precision(dataset_name="MNIST"):
     model = FullPrecisionNet()
     optimizer = torch.optim.SGD(model.parameters(), lr=1e-1)
+    scheduler = StepLRClamp(optimizer, step_size=5, min_lr=1e-4)
     trainer = TrainerGradFullPrecision(model,
                                        criterion=nn.CrossEntropyLoss(),
                                        dataset_name=dataset_name,
                                        optimizer=optimizer,
-                                       scheduler=StepLRClamp(optimizer, step_size=5, min_lr=1e-4))
+                                       scheduler=scheduler)
     trainer.train(n_epoch=100, debug=1)
 
 
 if __name__ == '__main__':
     # train_gradient()
     train_mcmc()
-    # test(train=True)
     # train_full_precision()

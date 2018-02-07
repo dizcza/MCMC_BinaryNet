@@ -72,7 +72,7 @@ class Monitor(object):
         self.viz = visdom.Visdom(env=f"{dataset_name} {time.strftime('%Y-%b-%d %H:%M')}")
         self.model = model
         self.batches_in_epoch = batches_in_epoch
-        self._update_step = max(batches_in_epoch // 100000, 1)
+        self._update_step = max(batches_in_epoch // 10, 1)
         self.sign_flips = 0
         self.batch_id = 0
         self.param_sign_before = {}

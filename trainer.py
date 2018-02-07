@@ -1,5 +1,6 @@
 import copy
 import random
+import math
 
 import torch
 import torch.nn as nn
@@ -20,6 +21,8 @@ class _Trainer(object):
         self.dataset_name = dataset_name
         self.train_loader = get_data_loader(dataset_name, train=True)
         self.monitor = Monitor(model, dataset_name, batches_in_epoch=len(self.train_loader))
+        self._register_monitor_parameters()
+        self.is_finished = False
 
     def save_model(self, accuracy: float = None):
         model_path = MODELS_DIR.joinpath(self.dataset_name, self.model.__class__.__name__).with_suffix('.pt')
@@ -48,6 +51,9 @@ class _Trainer(object):
                 print(f"Couldn't estimate the best accuracy for {self.model.__class__.__name__}. Reset to 0.")
         return best_accuracy
 
+    def _register_monitor_parameters(self):
+        pass
+
     def _train_batch(self, images, labels):
         raise NotImplementedError()
 
@@ -73,10 +79,14 @@ class _Trainer(object):
               f"Best {self.dataset_name} train accuracy so far: {best_accuracy:.4f}")
 
         for epoch in range(n_epoch):
+            if self.is_finished:
+                break
             self._epoch_started(epoch)
             for images, labels in tqdm(self.train_loader,
                                        desc="Epoch {:d}/{:d}".format(epoch, n_epoch),
                                        leave=False):
+                if self.is_finished:
+                    break
                 images = Variable(images)
                 labels = Variable(labels)
                 if use_cuda:
@@ -104,6 +114,10 @@ class TrainerGradFullPrecision(_Trainer):
         self.optimizer = optimizer
         self.scheduler = scheduler
 
+    def _register_monitor_parameters(self):
+        for name, param in self.model.named_parameters():
+            self.monitor.register_param(name, param)
+
     def _train_batch(self, images, labels):
         self.optimizer.zero_grad()
         outputs = self.model(images)
@@ -121,6 +135,11 @@ class TrainerGradFullPrecision(_Trainer):
 
 
 class TrainerGradBinary(TrainerGradFullPrecision):
+
+    def _register_monitor_parameters(self):
+        for name, param in named_parameters_binary(self.model):
+            self.monitor.register_param(name, param)
+
     def _train_batch(self, images, labels):
         outputs, loss = super()._train_batch(images, labels)
         for param in parameters_binary(self.model):
@@ -154,13 +173,11 @@ class TrainerMCMC(_Trainer):
 
         outputs = self.model(images)
         loss = self.criterion(outputs, labels)
-        loss_delta = (loss - loss_orig).data
-        self.monitor._draw_line(y=loss_delta[0], win='loss_delta', opts=dict(
-            xlabel='Epoch',
-            ylabel='ΔL',
-            title='loss_flipped - loss_orig'
-        ))
-        mcmc_proba_accept = torch.exp(-loss_delta / self.temperature)[0]
+        loss_delta = (loss - loss_orig).data[0]
+        if loss_delta < 0:
+            mcmc_proba_accept = 1.0
+        else:
+            mcmc_proba_accept = math.exp(-loss_delta / self.temperature)
         proba_draw = random.random()
         if proba_draw < mcmc_proba_accept:
             self.accepted_count += 1
@@ -177,9 +194,12 @@ class TrainerMCMC(_Trainer):
             title='MCMC accepted / total_tries'
         ))
 
+        self.is_finished &= self.temperature < 1e-7
+
         return outputs, loss
 
     def _epoch_finished(self, epoch):
+        # todo move ugly hardcoded rules to scheduler
         if (epoch + 1) % 10 == 0:
             self.flip_ratio = max(self.flip_ratio / 3, 1e-4)
             self.temperature /= 2.7**3
