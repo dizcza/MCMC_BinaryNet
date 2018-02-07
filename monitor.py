@@ -79,7 +79,6 @@ class Monitor(object):
         self._registered_params = {}
         self.log_model(model)
         self.log_binary_ratio()
-        self.grad_variance = {}
 
     def log_binary_ratio(self):
         n_params_full = sum(map(torch.numel, self.model.parameters()))
@@ -119,7 +118,6 @@ class Monitor(object):
             self.update_loss(loss.data[0])
             self.update_distribution()
             self.update_gradients()
-            self.update_gradients_variance()
         self.batch_id += 1
 
     def update_batch_accuracy(self, batch_accuracy: float):
@@ -160,7 +158,6 @@ class Monitor(object):
             raise ValueError(f"Illegal parameter name to register: {param_name}")
         self._registered_params[param_name] = param
         self.param_sign_before[param_name] = param.data.clone()
-        self.grad_variance[param_name] = VarianceOnline()
 
     def update_distribution(self):
         for name, param in self._registered_params.items():
@@ -176,22 +173,6 @@ class Monitor(object):
                     ylabel='# bins (distribution)',
                     title=name,
                 ))
-
-    def update_gradients_variance(self):
-        means = []
-        legend = []
-        for name, param in self._registered_params.items():
-            if param.grad is None:
-                continue
-            self.grad_variance[name].update(param.grad.data)
-            mean, std = self.grad_variance[name].get_mean_std()
-            means.extend([mean.norm(), std.norm()])
-            legend.extend([f"{name} mean", f"{name} std"])
-        self._draw_line(y=means, win='grad.mean+std', opts=dict(
-            xlabel='Epoch',
-            ylabel='Value',
-            legend=legend
-        ))
 
     def update_gradients(self):
         norms = []
