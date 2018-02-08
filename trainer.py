@@ -23,7 +23,6 @@ class _Trainer(object):
         self.train_loader = get_data_loader(dataset_name, train=True)
         self.monitor = Monitor(model, dataset_name, batches_in_epoch=len(self.train_loader))
         self._register_monitor_parameters()
-        self.is_finished = False
 
     def save_model(self, accuracy: float = None):
         model_path = MODELS_DIR.joinpath(self.dataset_name, self.model.__class__.__name__).with_suffix('.pt')
@@ -76,14 +75,10 @@ class _Trainer(object):
               f"Best {self.dataset_name} train accuracy so far: {best_accuracy:.4f}")
 
         for epoch in range(n_epoch):
-            if self.is_finished:
-                break
             self._epoch_started(epoch)
             for images, labels in tqdm(self.train_loader,
                                        desc="Epoch {:d}/{:d}".format(epoch, n_epoch),
                                        leave=False):
-                if self.is_finished:
-                    break
                 images = Variable(images)
                 labels = Variable(labels)
                 if use_cuda:
@@ -189,8 +184,6 @@ class TrainerMCMC(_Trainer):
             outputs = outputs_orig
             loss = loss_orig
         self.update_calls += 1
-
-        self.is_finished &= self.temperature < 1e-7
 
         self.loss_delta_mean += (abs(loss_delta) - self.loss_delta_mean) / self.update_calls
 
