@@ -11,52 +11,48 @@ This repo shows an alternative optimization of binary neural nets that uses forw
 ## Quick start
 
 ```
->>> from torchvision.models.alexnet import AlexNet
+>>> import torch.nn as nn
 >>> from layers import binarize_model
 >>> from trainer import TrainerMCMC
->>> model = AlexNet()
+>>> class Net(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv_sequential = nn.Sequential(
+                nn.BatchNorm2d(num_features=1),
+                nn.Conv2d(in_channels=1, out_channels=10, kernel_size=3, bias=False),
+                nn.MaxPool2d(kernel_size=2),
+                nn.ReLU(inplace=True),
+            )
+            self.linear = nn.Linear(in_features=1690, out_features=10, bias=False)
+    
+        def forward(self, x):
+            x = self.conv_sequential(x)
+            x = x.view(x.shape[0], -1)
+            x = self.linear(x)
+            return x
+
+>>> model = Net()
 >>> model_binary = binarize_model(model)
 >>> print(model_binary)
-AlexNet(
-  (features): Sequential(
-    (0): [Binary]Conv2d (3, 64, kernel_size=(11, 11), stride=(4, 4), padding=(2, 2))
-    (1): ReLU(inplace)
-    (2): MaxPool2d(kernel_size=(3, 3), stride=(2, 2), dilation=(1, 1))
-    (3): [Binary]Conv2d (64, 192, kernel_size=(5, 5), stride=(1, 1), padding=(2, 2))
-    (4): ReLU(inplace)
-    (5): MaxPool2d(kernel_size=(3, 3), stride=(2, 2), dilation=(1, 1))
-    (6): [Binary]Conv2d (192, 384, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
-    (7): ReLU(inplace)
-    (8): [Binary]Conv2d (384, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
-    (9): ReLU(inplace)
-    (10): [Binary]Conv2d (256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
-    (11): ReLU(inplace)
-    (12): MaxPool2d(kernel_size=(3, 3), stride=(2, 2), dilation=(1, 1))
+Net(
+  (conv_sequential): Sequential(
+    (0): BatchNorm2d(1, eps=1e-05, momentum=0.1, affine=True)
+    (1): [Binary]Conv2d (1, 10, kernel_size=(3, 3), stride=(1, 1), bias=False)
+    (2): MaxPool2d(kernel_size=(2, 2), stride=(2, 2), dilation=(1, 1))
+    (3): ReLU(inplace)
   )
-  (classifier): Sequential(
-    (1): Sequential(
-      (0): BatchNorm1d(9216, eps=1e-05, momentum=0.1, affine=True)
-      (1): [Binary]Linear(in_features=9216, out_features=4096)
-    )
-    (2): ReLU(inplace)
-    (4): Sequential(
-      (0): BatchNorm1d(4096, eps=1e-05, momentum=0.1, affine=True)
-      (1): [Binary]Linear(in_features=4096, out_features=4096)
-    )
-    (5): ReLU(inplace)
-    (6): Sequential(
-      (0): BatchNorm1d(4096, eps=1e-05, momentum=0.1, affine=True)
-      (1): [Binary]Linear(in_features=4096, out_features=1000)
-    )
+  (linear): Sequential(
+    (0): BatchNorm1d(1690, eps=1e-05, momentum=0.1, affine=True)
+    (1): [Binary]Linear(in_features=1690, out_features=10)
   )
 )
 
->>> trainer = TrainerMCMC(model,
+>>> trainer = TrainerMCMC(model_binary,
                           criterion=nn.CrossEntropyLoss(),
                           dataset_name="MNIST",
                           temperature=1e-3,  # environment temperature (decreases with time)
-                          flip_ratio=3*1e-3)  # flip how many signs of binary weights at MCMC step
->>> trainer.train(n_epoch=100, debug=0)
+                          flip_ratio=3e-3)  # flip how many signs of binary weights at MCMC step
+>>> trainer.train(n_epoch=100, debug=False)
 Training progress http://localhost:8097
 ```
 

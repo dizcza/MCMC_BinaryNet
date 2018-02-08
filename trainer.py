@@ -124,7 +124,8 @@ class TrainerGradFullPrecision(_Trainer):
         return outputs, loss
 
     def _epoch_started(self, epoch):
-        self.monitor.log(f"Epoch {epoch}. Learning rate {self.scheduler.get_lr()}")
+        if self.scheduler is not None:
+            self.monitor.log(f"Epoch {epoch}. Learning rate {self.scheduler.get_lr()}")
 
     def _epoch_finished(self, epoch):
         if self.scheduler is not None:
