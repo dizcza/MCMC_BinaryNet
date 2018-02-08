@@ -23,11 +23,11 @@ class NetBinary(nn.Module):
 
         fc_layers = []
         for (in_features, out_features) in zip(fc_sizes[:-1], fc_sizes[1:]):
-            fc_layers.append(nn.BatchNorm1d(in_features))
+            # fc_layers.append(nn.BatchNorm1d(in_features))
             layer = nn.Linear(in_features, out_features, bias=False)
             layer = BinaryDecorator(layer)
             fc_layers.append(layer)
-            fc_layers.append(nn.PReLU())
+            # fc_layers.append(nn.PReLU())
         self.fc_sequential = nn.Sequential(*fc_layers)
         # self.scale_layer = ScaleLayer(size=fc_sizes[-1])
 
@@ -61,9 +61,9 @@ def train_mcmc(dataset_name="MNIST"):
     trainer = TrainerMCMC(model,
                           criterion=nn.CrossEntropyLoss(),
                           dataset_name=dataset_name,
-                          temperature=1e-3,
-                          flip_ratio=3*1e-3)
-    trainer.train(n_epoch=100, debug=0)
+                          temperature=1e-1,
+                          flip_ratio=1e-2)
+    trainer.train(n_epoch=200, debug=0)
 
 
 class FullPrecisionNet(nn.Module):

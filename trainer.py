@@ -10,8 +10,8 @@ from torch.autograd import Variable
 from tqdm import tqdm
 
 from constants import MODELS_DIR
-from monitor import Monitor, calc_accuracy
-from utils import get_data_loader, named_parameters_binary, parameters_binary, load_model_state, find_param_by_name
+from monitor import Monitor, calc_accuracy, get_outputs, get_softmax_accuracy
+from utils import get_data_loader, named_parameters_binary, parameters_binary, load_model_state
 
 
 class _Trainer(object):
@@ -62,7 +62,7 @@ class _Trainer(object):
     def _epoch_started(self, epoch):
         pass
 
-    def _epoch_finished(self, epoch):
+    def _epoch_finished(self, epoch, outputs, labels):
         pass
     
     def train(self, n_epoch=10, debug=False):
@@ -93,15 +93,15 @@ class _Trainer(object):
                 outputs, loss = self._train_batch(images, labels)
                 self.monitor.batch_finished(outputs, labels, loss)
 
-            if not debug:
-                accuracy = calc_accuracy(self.model, self.train_loader)
-                is_best = accuracy > best_accuracy
-                self.monitor.update_train_accuracy(accuracy, is_best)
-                if is_best:
-                    self.save_model(accuracy)
-                    best_accuracy = accuracy
+            outputs_full, labels_full = get_outputs(self.model, self.train_loader)
+            accuracy = get_softmax_accuracy(outputs_full, labels_full)
+            is_best = accuracy > best_accuracy
+            self.monitor.update_train_accuracy(accuracy, is_best)
+            if is_best:
+                self.save_model(accuracy)
+                best_accuracy = accuracy
 
-            self._epoch_finished(epoch)
+            self._epoch_finished(epoch, outputs_full, labels_full)
 
 
 class TrainerGradFullPrecision(_Trainer):
@@ -127,7 +127,7 @@ class TrainerGradFullPrecision(_Trainer):
         if self.scheduler is not None:
             self.monitor.log(f"Epoch {epoch}. Learning rate {self.scheduler.get_lr()}")
 
-    def _epoch_finished(self, epoch):
+    def _epoch_finished(self, epoch, outputs, labels):
         if self.scheduler is not None:
             self.scheduler.step(epoch)
 
@@ -153,6 +153,10 @@ class TrainerMCMC(_Trainer):
         self.monitor.log(f"Temperature: {self.temperature}; flip ratio: {flip_ratio}")
         self.accepted_count = 0
         self.update_calls = 0
+        self.loss_delta_mean = 0
+        self.patience = 10
+        self.num_bad_epochs = 0
+        self.best_loss = float('inf')
         for param in model.parameters():
             param.requires_grad = False
             param.volatile = True
@@ -188,13 +192,22 @@ class TrainerMCMC(_Trainer):
 
         self.is_finished &= self.temperature < 1e-7
 
+        self.loss_delta_mean += (abs(loss_delta) - self.loss_delta_mean) / self.update_calls
+
         return outputs, loss
 
-    def _epoch_finished(self, epoch):
-        # todo move ugly hardcoded rules to scheduler
-        if (epoch + 1) % 10 == 0:
-            self.flip_ratio = max(self.flip_ratio / 3, 1e-4)
-            self.temperature /= 2.7**3
+    def _epoch_finished(self, epoch, outputs, labels):
+        self.temperature = min(self.temperature, self.loss_delta_mean)
+        loss = self.criterion(outputs, labels).data[0]
+        if loss < self.best_loss:
+            self.best_loss = loss
+            self.num_bad_epochs = 0
+        else:
+            self.num_bad_epochs += 1
+
+        if self.num_bad_epochs > self.patience:
+            self.flip_ratio = max(self.flip_ratio / 2, 1e-4)
+            self.num_bad_epochs = 0
 
     def flip_signs(self, parameters: Iterable[nn.Parameter]):
         param_modified = random.choice(list(parameters))
@@ -211,4 +224,31 @@ class TrainerMCMC(_Trainer):
             xlabel='Epoch',
             ylabel='Acceptance ratio',
             title='MCMC accepted / total_tries'
+        ))
+
+        def get_flip_ratio():
+            return self.flip_ratio * 100.
+
+        self.monitor.register_func(get_flip_ratio, opts=dict(
+            xlabel='Epoch',
+            ylabel='Sign flip ratio, %',
+            title='How many weight connections are flipped \n at MCMC step per layer'
+        ))
+
+        def get_temperature():
+            return self.temperature
+
+        self.monitor.register_func(get_temperature, opts=dict(
+            xlabel='Epoch',
+            ylabel='Temperature',
+            title='Environment temperature (energy)'
+        ))
+
+        def get_loss_delta():
+            return self.loss_delta_mean
+
+        self.monitor.register_func(get_loss_delta, opts=dict(
+            xlabel='Epoch',
+            ylabel='|ΔL|',
+            title='|Loss(flipped) - Loss(origin)| at MCMC step'
         ))

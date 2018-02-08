@@ -12,7 +12,7 @@ from torch.autograd import Variable
 from utils import get_data_loader, parameters_binary, find_param_by_name
 
 
-def get_softmax_accuracy(outputs, labels):
+def get_softmax_accuracy(outputs, labels) -> float:
     _, labels_predicted = torch.max(outputs.data, 1)
     softmax_accuracy = torch.sum(labels.data == labels_predicted) / len(labels)
     return softmax_accuracy
@@ -29,28 +29,34 @@ def timer(func):
     return wrapped
 
 
-def calc_accuracy(model: nn.Module, loader: torch.utils.data.DataLoader):
-    if model is None:
-        return 0.0
-    correct_count = 0
-    total_count = len(loader.dataset)
-    if loader.drop_last:
-        # drop the last incomplete batch
-        total_count -= len(loader.dataset) % loader.batch_size
+def get_outputs(model: nn.Module, loader: torch.utils.data.DataLoader):
     mode_saved = model.training
     model.train(False)
     use_cuda = torch.cuda.is_available()
     if use_cuda:
         model.cuda()
-    for batch_id, (images, labels) in enumerate(iter(loader)):
+    outputs_full = []
+    labels_full = []
+    for inputs, labels in iter(loader):
         if use_cuda:
-            images = images.cuda()
+            inputs = inputs.cuda()
             labels = labels.cuda()
-        outputs = model(Variable(images, volatile=True))
-        _, labels_predicted = torch.max(outputs.data, 1)
-        correct_count += torch.sum(labels_predicted == labels)
+        outputs = model(Variable(inputs, volatile=True))
+        outputs_full.append(outputs)
+        labels_full.append(labels)
     model.train(mode_saved)
-    return correct_count / total_count
+    outputs_full = torch.cat(outputs_full, dim=0)
+    labels_full = torch.cat(labels_full, dim=0)
+    labels_full = Variable(labels_full, volatile=True)
+    return outputs_full, labels_full
+
+
+def calc_accuracy(model: nn.Module, loader: torch.utils.data.DataLoader) -> float:
+    if model is None:
+        return 0.0
+    outputs, labels = get_outputs(model, loader)
+    accuracy = get_softmax_accuracy(outputs, labels)
+    return accuracy
 
 
 def test(model: nn.Module, dataset_name: str,  train=False):
@@ -141,8 +147,8 @@ class Monitor(object):
         self._registered_params = {}
         self._registered_functions = []
         self.sign_monitor = SignMonitor()
-        self.timer_update = UpdateTimer(max_skip=batches_in_epoch // 2)
-        self.log_model(model)
+        self.timer_update = UpdateTimer(max_skip=self.batches_in_epoch // 2)
+        self.log_model(self.model)
         self.log_binary_ratio()
 
     def log_binary_ratio(self):

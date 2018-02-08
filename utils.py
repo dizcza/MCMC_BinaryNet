@@ -30,14 +30,14 @@ def get_data_loader(dataset: str, train=True, batch_size=256) -> torch.utils.dat
         dataset_cls = datasets.MNIST
         transform = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize((0.1307,), (0.3081,))
+            transforms.Normalize(mean=(0.1307,), std=(0.3081,))
         ])
     elif dataset == "CIFAR10":
         dataset_cls = datasets.CIFAR10
         transform = transforms.Compose([
             # transforms.Grayscale(num_output_channels=1),
             transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+            transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
         ])
     else:
         raise NotImplementedError()
