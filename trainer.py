@@ -218,29 +218,17 @@ class TrainerMCMC(_Trainer):
             ylabel='Acceptance ratio',
             title='MCMC accepted / total_tries'
         ))
-
-        def get_flip_ratio():
-            return self.flip_ratio * 100.
-
-        self.monitor.register_func(get_flip_ratio, opts=dict(
+        self.monitor.register_func(lambda: self.flip_ratio * 100., opts=dict(
             xlabel='Epoch',
             ylabel='Sign flip ratio, %',
             title='How many weight connections are flipped \n at MCMC step per layer'
         ))
-
-        def get_temperature():
-            return self.temperature
-
-        self.monitor.register_func(get_temperature, opts=dict(
+        self.monitor.register_func(lambda: self.temperature, opts=dict(
             xlabel='Epoch',
             ylabel='Temperature',
             title='Environment temperature (energy)'
         ))
-
-        def get_loss_delta():
-            return self.loss_delta_mean
-
-        self.monitor.register_func(get_loss_delta, opts=dict(
+        self.monitor.register_func(lambda: self.loss_delta_mean, opts=dict(
             xlabel='Epoch',
             ylabel='|ΔL|',
             title='|Loss(flipped) - Loss(origin)| at MCMC step'

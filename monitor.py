@@ -194,8 +194,8 @@ class Monitor(object):
                 ylabel='Sign flips, %',
                 title="Sign flips after optimizer.step()",
             ))
-            for func, opts in self._registered_functions:
-                self._draw_line(y=func(), win=func.__name__, opts=opts)
+            for func_id, (func, opts) in enumerate(self._registered_functions):
+                self._draw_line(y=func(), win=f"func_{func_id}", opts=opts)
         self.batch_id += 1
 
     def update_batch_accuracy(self, batch_accuracy: float):
