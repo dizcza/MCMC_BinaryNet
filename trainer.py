@@ -12,6 +12,7 @@ from tqdm import tqdm
 from constants import MODELS_DIR
 from monitor import Monitor, calc_accuracy, get_outputs, get_softmax_accuracy
 from utils import get_data_loader, named_parameters_binary, parameters_binary, load_model_state
+from layers import compile_inference
 
 
 class _Trainer(object):
@@ -142,6 +143,7 @@ class TrainerGradBinary(TrainerGradFullPrecision):
 
 class TrainerMCMC(_Trainer):
     def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str, temperature=0.1, flip_ratio=0.1):
+        compile_inference(model)
         super().__init__(model, criterion, dataset_name)
         self.temperature = temperature
         self.flip_ratio = flip_ratio
@@ -189,22 +191,30 @@ class TrainerMCMC(_Trainer):
 
         return outputs, loss
 
+    def reset(self):
+        # self.accepted_count = 0
+        # self.update_calls = 0
+        # self.loss_delta_mean = 0
+        self.num_bad_epochs = 0
+
     def _epoch_finished(self, epoch, outputs, labels):
-        self.temperature = min(self.temperature, self.loss_delta_mean)
+        self.temperature = min(self.temperature, self.loss_delta_mean * 0.2)
         loss = self.criterion(outputs, labels).data[0]
+        self.monitor.update_loss(loss, mode='full dataset')
         if loss < self.best_loss:
             self.best_loss = loss
             self.num_bad_epochs = 0
         else:
             self.num_bad_epochs += 1
-
         if self.num_bad_epochs > self.patience:
             self.flip_ratio = max(self.flip_ratio / 2, 1e-4)
-            self.num_bad_epochs = 0
+            self.reset()
 
     def flip_signs(self, parameters: Iterable[nn.Parameter]):
         param_modified = random.choice(list(parameters))
         idx_to_flip = torch.rand(param_modified.data.shape) < self.flip_ratio
+        id_flip_for_sure = random.randrange(idx_to_flip.numel())
+        idx_to_flip.view(-1)[id_flip_for_sure] = True  # make sure at least 1 connection is changed
         if param_modified.data.is_cuda:
             idx_to_flip = idx_to_flip.cuda()
         data_orig = param_modified.data.clone()
@@ -221,7 +231,7 @@ class TrainerMCMC(_Trainer):
         self.monitor.register_func(lambda: self.flip_ratio * 100., opts=dict(
             xlabel='Epoch',
             ylabel='Sign flip ratio, %',
-            title='How many weight connections are flipped \n at MCMC step per layer'
+            title='MCMC flipped / total_connections per layer'
         ))
         self.monitor.register_func(lambda: self.temperature, opts=dict(
             xlabel='Epoch',
@@ -231,5 +241,5 @@ class TrainerMCMC(_Trainer):
         self.monitor.register_func(lambda: self.loss_delta_mean, opts=dict(
             xlabel='Epoch',
             ylabel='|ΔL|',
-            title='|Loss(flipped) - Loss(origin)| at MCMC step'
+            title='MCMC |Loss(flipped) - Loss(origin)|'
         ))

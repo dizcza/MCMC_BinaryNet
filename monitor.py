@@ -186,7 +186,7 @@ class Monitor(object):
         self.sign_monitor.batch_finished(self._registered_params)
         if self.timer_update.need_update(self.batch_id):
             self.update_batch_accuracy(batch_accuracy=get_softmax_accuracy(outputs, labels))
-            self.update_loss(loss.data[0])
+            self.update_loss(loss.data[0], mode='batch')
             self.update_distribution()
             self.update_gradients()
             self._draw_line(y=self.sign_monitor.get_sign_flips(), win='sign', opts=dict(
@@ -205,10 +205,11 @@ class Monitor(object):
             title='Train batch accuracy',
         ))
 
-    def update_loss(self, loss: float):
-        self._draw_line(loss, win='loss', opts=dict(
+    def update_loss(self, loss: float, mode='batch'):
+        self._draw_line(loss, win=f'{mode} loss', opts=dict(
             xlabel='Epoch',
             ylabel='Loss',
+            title=f'{mode} loss'
         ))
 
     def register_param(self, param_name: str, param: nn.Parameter = None):

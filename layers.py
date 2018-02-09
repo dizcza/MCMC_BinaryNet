@@ -5,27 +5,24 @@ import torch.nn.functional as F
 import torch.utils.data
 
 
-def binarize_model(model: nn.Module, ignore=(nn.Dropout,)) -> nn.Module:
-    def _binary_decor(model: nn.Module) -> nn.Module:
-        if isinstance(model, nn.modules.conv._ConvNd):
-            model = BinaryDecorator(model)
-        elif isinstance(model, nn.Linear):
-            model = nn.Sequential(
-                nn.BatchNorm1d(model.in_features),
-                BinaryDecorator(model)
-            )
-        return model
-
+def binarize_model(model: nn.Module, drop_layers=(nn.Dropout,)) -> nn.Module:
     for name, child in list(model.named_children()):
-        if isinstance(child, ignore):
+        if isinstance(child, drop_layers):
             delattr(model, name)
             continue
-        child_new = binarize_model(child, ignore)
+        child_new = binarize_model(child, drop_layers)
         if child_new is not child:
             setattr(model, name, child_new)
-    model = _binary_decor(model)
-
+    if isinstance(model, (nn.modules.conv._ConvNd, nn.Linear)):
+        model = BinaryDecorator(model)
     return model
+
+
+def compile_inference(model: nn.Module):
+    for name, child in list(model.named_children()):
+        compile_inference(child)
+    if isinstance(model, BinaryDecorator):
+        model.compile_inference()
 
 
 class BinaryFunc(torch.autograd.Function):
@@ -49,23 +46,31 @@ class BinaryDecorator(nn.Module):
         for param in layer.parameters():
             param.is_binary = True
         self.layer = layer
+        self.is_inference = False
 
     def compile_inference(self):
-        self.layer.weight.data.sign_()
-        self.forward = self.layer.forward
+        for param in self.layer.parameters():
+            param.data.sign_()
+        self.is_inference = True
 
     def forward(self, x):
         x_mean = torch.mean(torch.abs(x))
         x = BinaryFunc.apply(x)
-        weight_full = self.layer.weight.data.clone()
-        self.layer.weight.data.sign_()
-        x = self.layer.forward(x)
-        self.layer.weight.data = weight_full
+        if self.is_inference:
+            x = self.layer(x)
+        else:
+            weight_full = self.layer.weight.data.clone()
+            self.layer.weight.data.sign_()
+            x = self.layer(x)
+            self.layer.weight.data = weight_full
         x = F.mul(x, x_mean)
         return x
 
     def __repr__(self):
-        return "[Binary]" + repr(self.layer)
+        tag = "[Binary]"
+        if self.is_inference:
+            tag += '[Compiled]'
+        return tag + repr(self.layer)
 
 
 class ScaleLayer(nn.Module):
