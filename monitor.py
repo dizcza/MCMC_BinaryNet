@@ -134,15 +134,15 @@ class SignMonitor(object):
 class Monitor(object):
     # todo: feature maps
 
-    def __init__(self, model: nn.Module, dataset_name: str, batches_in_epoch: int):
+    def __init__(self, trainer):
         """
-        :param model: network to monitor
-        :param dataset_name: 'MNIST', 'CIFAR10', etc.
-        :param batches_in_epoch: number of batches in one epoch
+        :param trainer: _Trainer instance
         """
-        self.viz = visdom.Visdom(env=f"{dataset_name} {time.strftime('%Y-%b-%d %H:%M')}")
-        self.model = model
-        self.batches_in_epoch = batches_in_epoch
+        self.viz = visdom.Visdom(env=f"{trainer.dataset_name} "
+                                     f"{trainer.__class__.__name__} "
+                                     f"{time.strftime('%b-%d %H:%M')}")
+        self.model = trainer.model
+        self.batches_in_epoch = len(trainer.train_loader)
         self.batch_id = 0
         self._registered_params = {}
         self._registered_functions = []
@@ -260,4 +260,5 @@ class Monitor(object):
             markers=True,
         ))
         if is_best:
-            self.log(f"Best train accuracy so far: {accuracy:.4f}")
+            epoch = self.batch_id // self.batches_in_epoch
+            self.log(f"Epoch {epoch}. Best train accuracy so far: {accuracy:.4f}")

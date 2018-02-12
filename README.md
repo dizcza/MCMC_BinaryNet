@@ -1,6 +1,6 @@
 # MCMC Binary Net optimization
 
-This repo shows an alternative optimization of binary neural nets that uses forward pass only. No backward passes. No gradients. Instead, we can use Gibbs sampling to randomly select `flip_ratio` weights (connections) in any binary network and flip their signs (multiply by `-1`). Then, we can accept or reject a new candidate (new model weights) at MCMC step. Convergence is determined by `temperature` that slowly decreases with time.
+This repo shows an alternative optimization of binary neural nets that uses forward pass only. No backward passes. No gradients. Instead, we can use Gibbs sampling to randomly select `flip_ratio` weights (connections) in any binary network and flip their signs (multiply by `-1`). Then, we can accept or reject a new candidate (new model weights) at MCMC step. Convergence is determined by the temperature as a function of `flip_ratio` that slowly decreases with time.
 
 ## Requirements
 
@@ -9,6 +9,10 @@ This repo shows an alternative optimization of binary neural nets that uses forw
 
 
 ## Quick start
+
+Before running any experiment, make sure you've started the visdom server:
+
+`python3 -m visdom.server`
 
 ```
 >>> import torch.nn as nn
@@ -59,3 +63,5 @@ Training progress http://localhost:8097
 ## Results
 
 Navigate to [http://ec2-34-227-113-244.compute-1.amazonaws.com:8099](http://ec2-34-227-113-244.compute-1.amazonaws.com:8099) and choose the Environment you want (`main` env is empty).
+
+For local results, go to [http://localhost:8097](http://localhost:8097)

@@ -14,6 +14,9 @@ def binarize_model(model: nn.Module, drop_layers=(nn.Dropout,)) -> nn.Module:
         if child_new is not child:
             setattr(model, name, child_new)
     if isinstance(model, (nn.modules.conv._ConvNd, nn.Linear)):
+        if hasattr(model, 'bias'):
+            delattr(model, 'bias')
+            model.register_parameter(name='bias', param=None)
         model = BinaryDecorator(model)
     return model
 

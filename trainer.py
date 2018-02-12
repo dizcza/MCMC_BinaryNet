@@ -1,12 +1,13 @@
 import copy
 import random
 import math
-from typing import Iterable
+from typing import Iterable, Union
 
 import torch
 import torch.nn as nn
 import torch.utils.data
 from torch.autograd import Variable
+from torch.optim.lr_scheduler import _LRScheduler, ReduceLROnPlateau
 from tqdm import tqdm
 
 from constants import MODELS_DIR
@@ -22,7 +23,7 @@ class _Trainer(object):
         self.criterion = criterion
         self.dataset_name = dataset_name
         self.train_loader = get_data_loader(dataset_name, train=True)
-        self.monitor = Monitor(model, dataset_name, batches_in_epoch=len(self.train_loader))
+        self.monitor = Monitor(self)
         self._register_monitor_parameters()
 
     def save_model(self, accuracy: float = None):
@@ -59,9 +60,6 @@ class _Trainer(object):
     def _train_batch(self, images, labels):
         raise NotImplementedError()
 
-    def _epoch_started(self, epoch):
-        pass
-
     def _epoch_finished(self, epoch, outputs, labels):
         pass
     
@@ -76,7 +74,6 @@ class _Trainer(object):
               f"Best {self.dataset_name} train accuracy so far: {best_accuracy:.4f}")
 
         for epoch in range(n_epoch):
-            self._epoch_started(epoch)
             for images, labels in tqdm(self.train_loader,
                                        desc="Epoch {:d}/{:d}".format(epoch, n_epoch),
                                        leave=False):
@@ -101,11 +98,27 @@ class _Trainer(object):
 
 
 class TrainerGradFullPrecision(_Trainer):
-    def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str, optimizer: torch.optim.Optimizer,
-                 scheduler=None):
+    def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str,
+                 optimizer: torch.optim.Optimizer,
+                 scheduler: Union[_LRScheduler, ReduceLROnPlateau, None] = None):
         super().__init__(model, criterion, dataset_name)
         self.optimizer = optimizer
         self.scheduler = scheduler
+        self._register_monitor_lr()
+
+    def _register_monitor_lr(self):
+        if self.scheduler is None:
+            return
+        opts = dict(
+            xlabel='Epoch',
+            ylabel='Learning rate',
+            title='Learning rate'
+        )
+        if isinstance(self.scheduler, _LRScheduler):
+            lr_getter = self.scheduler.get_lr
+        else:
+            lr_getter = lambda: list(group['lr'] for group in self.optimizer.param_groups)
+        self.monitor.register_func(lr_getter, opts=opts)
 
     def _register_monitor_parameters(self):
         for name, param in self.model.named_parameters():
@@ -119,13 +132,12 @@ class TrainerGradFullPrecision(_Trainer):
         self.optimizer.step(closure=None)
         return outputs, loss
 
-    def _epoch_started(self, epoch):
-        if self.scheduler is not None:
-            self.monitor.log(f"Epoch {epoch}. Learning rate {self.scheduler.get_lr()}")
-
     def _epoch_finished(self, epoch, outputs, labels):
-        if self.scheduler is not None:
-            self.scheduler.step(epoch)
+        if isinstance(self.scheduler, ReduceLROnPlateau):
+            loss = self.criterion(outputs, labels).data[0]
+            self.scheduler.step(metrics=loss, epoch=epoch)
+        elif isinstance(self.scheduler, _LRScheduler):
+            self.scheduler.step(epoch=epoch)
 
 
 class TrainerGradBinary(TrainerGradFullPrecision):
@@ -142,16 +154,16 @@ class TrainerGradBinary(TrainerGradFullPrecision):
 
 
 class TrainerMCMC(_Trainer):
-    def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str, temperature=0.1, flip_ratio=0.1):
+    def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str, flip_ratio=0.1):
         compile_inference(model)
         super().__init__(model, criterion, dataset_name)
-        self.temperature = temperature
         self.flip_ratio = flip_ratio
-        self.monitor.log(f"Temperature: {self.temperature}; flip ratio: {flip_ratio}")
+        self.monitor.log(f"Flip ratio: {flip_ratio}")
         self.accepted_count = 0
         self.update_calls = 0
         self.loss_delta_mean = 0
-        self.patience = 10
+        self.loss_last_step = 0
+        self.patience = 5
         self.num_bad_epochs = 0
         self.best_loss = float('inf')
         for param in model.parameters():
@@ -176,7 +188,7 @@ class TrainerMCMC(_Trainer):
         if loss_delta < 0:
             mcmc_proba_accept = 1.0
         else:
-            mcmc_proba_accept = math.exp(-loss_delta / self.temperature)
+            mcmc_proba_accept = math.exp(-loss_delta / self.flip_ratio)
         proba_draw = random.random()
         if proba_draw < mcmc_proba_accept:
             self.accepted_count += 1
@@ -198,7 +210,6 @@ class TrainerMCMC(_Trainer):
         self.num_bad_epochs = 0
 
     def _epoch_finished(self, epoch, outputs, labels):
-        self.temperature = min(self.temperature, self.loss_delta_mean * 0.2)
         loss = self.criterion(outputs, labels).data[0]
         self.monitor.update_loss(loss, mode='full dataset')
         if loss < self.best_loss:
@@ -207,8 +218,9 @@ class TrainerMCMC(_Trainer):
         else:
             self.num_bad_epochs += 1
         if self.num_bad_epochs > self.patience:
-            self.flip_ratio = max(self.flip_ratio / 2, 1e-4)
+            self.flip_ratio = max(self.flip_ratio * 0.8, 1e-4)
             self.reset()
+            self.loss_last_step = self.best_loss
 
     def flip_signs(self, parameters: Iterable[nn.Parameter]):
         param_modified = random.choice(list(parameters))
@@ -232,11 +244,6 @@ class TrainerMCMC(_Trainer):
             xlabel='Epoch',
             ylabel='Sign flip ratio, %',
             title='MCMC flipped / total_connections per layer'
-        ))
-        self.monitor.register_func(lambda: self.temperature, opts=dict(
-            xlabel='Epoch',
-            ylabel='Temperature',
-            title='Environment temperature (energy)'
         ))
         self.monitor.register_func(lambda: self.loss_delta_mean, opts=dict(
             xlabel='Epoch',
