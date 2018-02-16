@@ -4,7 +4,7 @@ This repo shows an alternative optimization of binary neural nets that uses forw
 
 ## Requirements
 
-* Python 3.5+
+* Python 3.6+
 * [requirements.txt](requirements.txt)
 
 

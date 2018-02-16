@@ -91,7 +91,8 @@ class _Trainer(object):
             is_best = accuracy > best_accuracy
             self.monitor.update_train_accuracy(accuracy, is_best)
             if is_best:
-                self.save_model(accuracy)
+                if not debug:
+                    self.save_model(accuracy)
                 best_accuracy = accuracy
 
             self._epoch_finished(epoch, outputs_full, labels_full)
@@ -104,21 +105,12 @@ class TrainerGradFullPrecision(_Trainer):
         super().__init__(model, criterion, dataset_name)
         self.optimizer = optimizer
         self.scheduler = scheduler
-        self._register_monitor_lr()
-
-    def _register_monitor_lr(self):
-        if self.scheduler is None:
-            return
-        opts = dict(
-            xlabel='Epoch',
-            ylabel='Learning rate',
-            title='Learning rate'
-        )
-        if isinstance(self.scheduler, _LRScheduler):
-            lr_getter = self.scheduler.get_lr
-        else:
-            lr_getter = lambda: list(group['lr'] for group in self.optimizer.param_groups)
-        self.monitor.register_func(lr_getter, opts=opts)
+        if self.scheduler is not None:
+            self.monitor.register_func(lambda: list(group['lr'] for group in self.optimizer.param_groups), opts=dict(
+                xlabel='Epoch',
+                ylabel='Learning rate',
+                title='Learning rate'
+            ))
 
     def _register_monitor_parameters(self):
         for name, param in self.model.named_parameters():
@@ -162,7 +154,6 @@ class TrainerMCMC(_Trainer):
         self.accepted_count = 0
         self.update_calls = 0
         self.loss_delta_mean = 0
-        self.loss_last_step = 0
         self.patience = 5
         self.num_bad_epochs = 0
         self.best_loss = float('inf')
@@ -218,19 +209,23 @@ class TrainerMCMC(_Trainer):
         else:
             self.num_bad_epochs += 1
         if self.num_bad_epochs > self.patience:
-            self.flip_ratio = max(self.flip_ratio * 0.8, 1e-4)
+            self.flip_ratio = max(self.flip_ratio * 0.7, 1e-4)
             self.reset()
-            self.loss_last_step = self.best_loss
 
     def flip_signs(self, parameters: Iterable[nn.Parameter]):
         param_modified = random.choice(list(parameters))
-        idx_to_flip = torch.rand(param_modified.data.shape) < self.flip_ratio
-        id_flip_for_sure = random.randrange(idx_to_flip.numel())
-        idx_to_flip.view(-1)[id_flip_for_sure] = True  # make sure at least 1 connection is changed
-        if param_modified.data.is_cuda:
-            idx_to_flip = idx_to_flip.cuda()
         data_orig = param_modified.data.clone()
-        param_modified.data[idx_to_flip] *= -1
+        shapes = param_modified.data.shape
+
+        def sample_neurons(size):
+            return random.sample(range(size), k=math.ceil(size * self.flip_ratio))
+
+        for size_output, size_input in zip(shapes[:-1], shapes[1:]):
+            idx_output = sample_neurons(size_output)
+            idx_input = sample_neurons(size_input)
+            weights_output = param_modified.data[idx_output, :]
+            weights_output[:, idx_input] *= -1
+            param_modified.data[idx_output, :] = weights_output
         return param_modified, data_orig
 
     def _register_monitor_parameters(self):
@@ -243,7 +238,7 @@ class TrainerMCMC(_Trainer):
         self.monitor.register_func(lambda: self.flip_ratio * 100., opts=dict(
             xlabel='Epoch',
             ylabel='Sign flip ratio, %',
-            title='MCMC flipped / total_connections per layer'
+            title='MCMC flipped / total_neurons per layer'
         ))
         self.monitor.register_func(lambda: self.loss_delta_mean, opts=dict(
             xlabel='Epoch',

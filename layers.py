@@ -5,19 +5,26 @@ import torch.nn.functional as F
 import torch.utils.data
 
 
-def binarize_model(model: nn.Module, drop_layers=(nn.Dropout,)) -> nn.Module:
+def binarize_model(model: nn.Module, drop_layers=(nn.Dropout,), keep_data=True) -> nn.Module:
+    """
+    :param model: net model
+    :param drop_layers: remove these layers from the input model
+    :param keep_data: keep original parameters data (True)
+                      or re-sample (False) as two Gaussian peaks near 0.5 and -0.5
+    :return: model with linear and conv layers wrapped in BinaryDecorator
+    """
     for name, child in list(model.named_children()):
         if isinstance(child, drop_layers):
             delattr(model, name)
             continue
-        child_new = binarize_model(child, drop_layers)
+        child_new = binarize_model(model=child, drop_layers=drop_layers, keep_data=keep_data)
         if child_new is not child:
             setattr(model, name, child_new)
     if isinstance(model, (nn.modules.conv._ConvNd, nn.Linear)):
         if hasattr(model, 'bias'):
             delattr(model, 'bias')
             model.register_parameter(name='bias', param=None)
-        model = BinaryDecorator(model)
+        model = BinaryDecorator(model, as_two_peaks=not keep_data)
     return model
 
 
@@ -44,9 +51,13 @@ class BinaryFunc(torch.autograd.Function):
 
 
 class BinaryDecorator(nn.Module):
-    def __init__(self, layer: nn.Module):
+    def __init__(self, layer: nn.Module, as_two_peaks=False):
         super().__init__()
         for param in layer.parameters():
+            if as_two_peaks:
+                data_peaks = torch.randn(param.data.shape) / 10 + 0.5
+                data_peaks[torch.rand(data_peaks.shape) > 0.5] *= -1
+                param.data = data_peaks
             param.is_binary = True
         self.layer = layer
         self.is_inference = False

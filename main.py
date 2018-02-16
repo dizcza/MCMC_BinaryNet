@@ -4,7 +4,7 @@ import torch.utils.data
 
 from layers import ScaleLayer, BinaryDecorator, binarize_model
 from trainer import TrainerGradFullPrecision, TrainerMCMC, TrainerGradBinary
-from utils import StepLRClamp
+from utils import StepLRClamp, AdamCustomDecay
 
 
 class NetBinary(nn.Module):
@@ -40,41 +40,40 @@ class NetBinary(nn.Module):
 class MLP(nn.Module):
     def __init__(self):
         super().__init__()
-        self.linear = nn.Sequential(
-            nn.Linear(3 * 32 ** 2, 10, bias=False),
-        )
+        self.linear = nn.Linear(in_features=28 ** 2, out_features=10, bias=False)
 
     def forward(self, x):
         x = x.view(x.shape[0], -1)
         return self.linear(x)
 
 
-def train_gradient(model, is_binary=True):
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, threshold=1e-3, min_lr=1e-4)
+def train_gradient(model: nn.Module, is_binary=True, dataset_name="MNIST"):
+    optimizer = AdamCustomDecay(model.parameters(), lr=1e-2, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10,
+                                                           threshold=1e-3, min_lr=1e-4)
     if is_binary:
-        model = binarize_model(model)
+        model = binarize_model(model, keep_data=False)
         trainer_cls = TrainerGradBinary
     else:
         trainer_cls = TrainerGradFullPrecision
     trainer = trainer_cls(model,
                           criterion=nn.CrossEntropyLoss(),
-                          dataset_name="CIFAR10",
+                          dataset_name=dataset_name,
                           optimizer=optimizer,
                           scheduler=scheduler)
     trainer.train(n_epoch=200, debug=0)
 
 
-def train_mcmc(model):
+def train_mcmc(model: nn.Module, dataset_name="MNIST"):
     model = binarize_model(model)
     trainer = TrainerMCMC(model,
                           criterion=nn.CrossEntropyLoss(),
-                          dataset_name="CIFAR10",
-                          flip_ratio=1e-2)
-    trainer.train(n_epoch=500, debug=0)
+                          dataset_name=dataset_name,
+                          flip_ratio=0.1)
+    trainer.train(n_epoch=500, debug=1)
 
 
 if __name__ == '__main__':
-    # train_gradient(model=NetBinary(conv_channels=[], fc_sizes=[3 * 32 ** 2, 10]), is_binary=True)
+    # train_gradient(model=NetBinary(conv_channels=[], fc_sizes=[1 * 28 ** 2, 10]), is_binary=True)
     train_mcmc(model=MLP())
 

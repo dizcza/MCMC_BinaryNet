@@ -96,7 +96,7 @@ class UpdateTimer(object):
 
     def __init__(self, max_skip: int):
         self.max_skip = max_skip
-        self.next_update = 1
+        self.next_update = 10
 
     def need_update(self, batch_id: int):
         if batch_id >= self.next_update:
