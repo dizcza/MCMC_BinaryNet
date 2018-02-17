@@ -1,4 +1,5 @@
 import math
+from tqdm import tqdm
 from pathlib import Path
 from typing import Union
 
@@ -26,23 +27,23 @@ def find_param_by_name(model: nn.Module, name_search: str) -> Union[nn.Parameter
     return None
 
 
-def get_data_loader(dataset: str, train=True, batch_size=256) -> torch.utils.data.DataLoader:
+def get_data_loader(dataset: str, train=True, batch_size=256, transform=None) -> torch.utils.data.DataLoader:
+    transform_list = []
     if dataset == "MNIST":
         dataset_cls = datasets.MNIST
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=(0.1307,), std=(0.3081,))
-        ])
+        transform_list.append(transforms.ToTensor())
+        transform_list.append(transforms.Normalize(mean=(0.1307,), std=(0.3081,)))
+    elif dataset == "MNIST56":
+        dataset_cls = MNIST56
     elif dataset == "CIFAR10":
         dataset_cls = datasets.CIFAR10
-        transform = transforms.Compose([
-            # transforms.Grayscale(num_output_channels=1),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
-        ])
+        transform_list.append(transforms.ToTensor())
+        transform_list.append(transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)))
     else:
         raise NotImplementedError()
-    dataset = dataset_cls('data', train=train, download=True, transform=transform)
+    if transform is not None:
+        transform_list.insert(0, transform)
+    dataset = dataset_cls('data', train=train, download=True, transform=transforms.Compose(transform_list))
     loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
     return loader
 
@@ -118,3 +119,27 @@ class AdamCustomDecay(torch.optim.Adam):
                 p.data.addcdiv_(-step_size, exp_avg, denom)
 
         return loss
+
+
+class MNISTSmall(torch.utils.data.TensorDataset):
+    def __init__(self, labels_keep=(5, 6), resize_to=(5, 5),  train=True):
+        mnist = get_data_loader(dataset='MNIST', train=train, transform=transforms.Resize(size=resize_to))
+        data = []
+        targets = []
+        for images, labels in tqdm(mnist, desc=f"Preparing {self.__class__.__name__} dataset"):
+            for _image, _label in zip(images, labels):
+                if _label in labels_keep:
+                    new_label = labels_keep.index(_label)
+                    targets.append(new_label)
+                    data.append(_image)
+        data = torch.cat(data, dim=0)
+        targets = torch.LongTensor(targets)
+        super().__init__(data_tensor=data, target_tensor=targets)
+
+
+class MNIST56(MNISTSmall):
+    """
+    MNIST 5 and 6 digits, resized to 5x5.
+    """
+    def __init__(self, *args, train=True, **kwargs):
+        super().__init__(labels_keep=(5, 6), resize_to=(5, 5), train=train)

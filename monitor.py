@@ -150,6 +150,17 @@ class Monitor(object):
         self.timer_update = UpdateTimer(max_skip=self.batches_in_epoch // 2)
         self.log_model(self.model)
         self.log_binary_ratio()
+        self.log_trainer(trainer)
+        print(f"Monitor is opened at http://localhost:8097. Choose environment '{self.viz.env}'.")
+
+    def log_trainer(self, trainer):
+        self.log(f"Criterion: {trainer.criterion}")
+        optimizer = getattr(trainer, 'optimizer', None)
+        if optimizer is not None:
+            optimizer_str = f"Optimizer {optimizer.__class__.__name__}:"
+            for group_id, group in enumerate(optimizer.param_groups):
+                optimizer_str += f"\n\tgroup {group_id}: lr={group['lr']}, weight_decay={group['weight_decay']}"
+            self.log(optimizer_str)
 
     def log_binary_ratio(self):
         n_params_full = sum(map(torch.numel, self.model.parameters()))

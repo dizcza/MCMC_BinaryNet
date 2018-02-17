@@ -38,9 +38,9 @@ class NetBinary(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self):
+    def __init__(self, in_features=28**2, out_features=10):
         super().__init__()
-        self.linear = nn.Linear(in_features=28 ** 2, out_features=10, bias=False)
+        self.linear = nn.Linear(in_features=in_features, out_features=out_features, bias=False)
 
     def forward(self, x):
         x = x.view(x.shape[0], -1)
@@ -75,5 +75,5 @@ def train_mcmc(model: nn.Module, dataset_name="MNIST"):
 
 if __name__ == '__main__':
     # train_gradient(model=NetBinary(conv_channels=[], fc_sizes=[1 * 28 ** 2, 10]), is_binary=True)
-    train_mcmc(model=MLP())
+    train_mcmc(model=MLP(in_features=25, out_features=2), dataset_name="MNIST56")
 

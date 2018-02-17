@@ -36,7 +36,6 @@ class _Trainer(object):
         print(msg)
 
     def load_best_accuracy(self, debug=False) -> float:
-        train_loader = get_data_loader(self.dataset_name, train=True)
         best_accuracy = 0.
         if not debug:
             try:
@@ -47,7 +46,7 @@ class _Trainer(object):
                 for param in loaded_model.parameters():
                     param.requires_grad = False
                     param.volatile = True
-                best_accuracy = calc_accuracy(loaded_model, train_loader)
+                best_accuracy = calc_accuracy(loaded_model, self.train_loader)
                 del loaded_model
             except Exception as e:
                 print(f"Couldn't estimate the best accuracy for {self.model.__class__.__name__}. Reset to 0.")
@@ -214,18 +213,18 @@ class TrainerMCMC(_Trainer):
 
     def flip_signs(self, parameters: Iterable[nn.Parameter]):
         param_modified = random.choice(list(parameters))
+        assert param_modified.ndimension() == 2, "For now, only nn.Linear is supported"
         data_orig = param_modified.data.clone()
-        shapes = param_modified.data.shape
 
         def sample_neurons(size):
             return random.sample(range(size), k=math.ceil(size * self.flip_ratio))
 
-        for size_output, size_input in zip(shapes[:-1], shapes[1:]):
-            idx_output = sample_neurons(size_output)
-            idx_input = sample_neurons(size_input)
-            weights_output = param_modified.data[idx_output, :]
-            weights_output[:, idx_input] *= -1
-            param_modified.data[idx_output, :] = weights_output
+        size_output, size_input = param_modified.data.shape
+        idx_output = sample_neurons(size_output)
+        idx_input = sample_neurons(size_input)
+        weights_output = param_modified.data[idx_output, :]
+        weights_output[:, idx_input] *= -1
+        param_modified.data[idx_output, :] = weights_output
         return param_modified, data_orig
 
     def _register_monitor_parameters(self):
