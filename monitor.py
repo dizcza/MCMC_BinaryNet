@@ -1,5 +1,6 @@
 import time
 import math
+from statsmodels.tsa.stattools import acf
 from typing import Union, List, Dict, Callable
 
 import numpy as np
@@ -146,6 +147,7 @@ class Monitor(object):
         self.batch_id = 0
         self._registered_params = {}
         self._registered_functions = []
+        self._autocorr = []
         self.sign_monitor = SignMonitor()
         self.timer_update = UpdateTimer(max_skip=self.batches_in_epoch // 2)
         self.log_model(self.model)
@@ -273,3 +275,19 @@ class Monitor(object):
         if is_best:
             epoch = self.batch_id // self.batches_in_epoch
             self.log(f"Epoch {epoch}. Best train accuracy so far: {accuracy:.4f}")
+
+    def update_autocorrelation(self, sample):
+        self._autocorr.append(sample.numpy())
+        epoch = self.batch_id // self.batches_in_epoch
+        if (epoch + 1) % 10 == 0:
+            m = np.vstack(self._autocorr)
+            coefs = []
+            for trace in m.T:
+                coef = acf(trace, nlags=min(epoch-1, 30))
+                coefs.append(coef)
+            coef_mean = np.mean(coefs, axis=0)
+            self.viz.line(Y=coef_mean, X=np.arange(len(coef_mean)), win='autocorr', opts=dict(
+                xlabel='Epoch',
+                ylabel='ACF',
+                title='Autocorrelation of flipped connections'
+            ))

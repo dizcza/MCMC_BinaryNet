@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from constants import MODELS_DIR
 from monitor import Monitor, calc_accuracy, get_outputs, get_softmax_accuracy
-from utils import get_data_loader, named_parameters_binary, parameters_binary, load_model_state
+from utils import get_data_loader, named_parameters_binary, parameters_binary, load_model_state, MNISTSmall
 from layers import compile_inference
 
 
@@ -155,6 +155,7 @@ class TrainerMCMC(_Trainer):
         self.loss_delta_mean = 0
         self.patience = 5
         self.num_bad_epochs = 0
+        self.plot_autocorrelation = isinstance(self.train_loader.dataset, MNISTSmall)
         self.best_loss = float('inf')
         for param in model.parameters():
             param.requires_grad = False
@@ -170,7 +171,12 @@ class TrainerMCMC(_Trainer):
         outputs_orig = self.model(images)
         loss_orig = self.criterion(outputs_orig, labels)
 
-        param_modified, data_orig = self.flip_signs(parameters_binary(self.model))
+        param_modified, idx_to_flip = self.choose_weights_to_flip(parameters_binary(self.model))
+        data_orig = param_modified.data.clone()
+        idx_to_flip_cuda = idx_to_flip
+        if torch.cuda.is_available():
+            idx_to_flip_cuda = idx_to_flip.cuda()
+        param_modified[idx_to_flip_cuda] *= -1
 
         outputs = self.model(images)
         loss = self.criterion(outputs, labels)
@@ -182,6 +188,8 @@ class TrainerMCMC(_Trainer):
         proba_draw = random.random()
         if proba_draw < mcmc_proba_accept:
             self.accepted_count += 1
+            if self.plot_autocorrelation:
+                self.monitor.update_autocorrelation(idx_to_flip)
         else:
             # reject
             param_modified.data = data_orig
@@ -211,10 +219,9 @@ class TrainerMCMC(_Trainer):
             self.flip_ratio = max(self.flip_ratio * 0.7, 1e-4)
             self.reset()
 
-    def flip_signs(self, parameters: Iterable[nn.Parameter]):
+    def choose_weights_to_flip(self, parameters: Iterable[nn.Parameter]):
         param_modified = random.choice(list(parameters))
         assert param_modified.ndimension() == 2, "For now, only nn.Linear is supported"
-        data_orig = param_modified.data.clone()
 
         def sample_neurons(size):
             return random.sample(range(size), k=math.ceil(size * self.flip_ratio))
@@ -222,10 +229,14 @@ class TrainerMCMC(_Trainer):
         size_output, size_input = param_modified.data.shape
         idx_output = sample_neurons(size_output)
         idx_input = sample_neurons(size_input)
-        weights_output = param_modified.data[idx_output, :]
-        weights_output[:, idx_input] *= -1
-        param_modified.data[idx_output, :] = weights_output
-        return param_modified, data_orig
+
+        # hack to select and modify a sub-matrix
+        idx_connection_flip = torch.ByteTensor(param_modified.data.shape).fill_(0)
+        idx_connection_flip_output = idx_connection_flip[idx_output, :]
+        idx_connection_flip_output[:, idx_input] = True
+        idx_connection_flip[idx_output, :] = idx_connection_flip_output
+
+        return param_modified, idx_connection_flip
 
     def _register_monitor_parameters(self):
         super()._register_monitor_parameters()

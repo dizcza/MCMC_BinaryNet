@@ -3,3 +3,4 @@ tqdm
 torch==0.3.0.post4
 torchvision==0.2.0
 visdom==0.1.7
+statsmodels==0.8.0
