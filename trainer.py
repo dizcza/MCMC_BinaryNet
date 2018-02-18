@@ -95,6 +95,7 @@ class _Trainer(object):
                 best_accuracy = accuracy
 
             self._epoch_finished(epoch, outputs_full, labels_full)
+            self.monitor.epoch_finished()
 
 
 class TrainerGradFullPrecision(_Trainer):

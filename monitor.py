@@ -1,6 +1,6 @@
 import time
 import math
-from statsmodels.tsa.stattools import acf
+from statsmodels.tsa.stattools import acf, ccf
 from typing import Union, List, Dict, Callable
 
 import numpy as np
@@ -278,19 +278,45 @@ class Monitor(object):
 
     def update_autocorrelation(self, sample):
         self._autocorr.append(sample.view(-1).numpy())
+
+    def _plot_autocorrelation(self):
         epoch = self.batch_id // self.batches_in_epoch
-        if (epoch + 1) % 10 == 0:
-            observations = np.vstack(self._autocorr)
-            coefficients = []
-            for weight_samples in observations.T:
-                acf_lags = acf(weight_samples, nlags=min(len(weight_samples)-1, 30))
-                coefficients.append(acf_lags)
-            autocorr_accumulated_per_weight = np.sum(np.abs(coefficients), axis=1)
-            weight_most_autocorr = np.argmax(autocorr_accumulated_per_weight)
-            lags = coefficients[weight_most_autocorr]
-            self.viz.line(Y=lags, X=np.arange(len(lags)), win='autocorr',
-                          opts=dict(
-                xlabel='Epoch',
-                ylabel='ACF',
-                title=f'Autocorrelation of weight #{weight_most_autocorr}'
-            ))
+        if (epoch + 1) % 5 != 0:
+            return
+
+        def strongest_correlation_id(coef_vars_lags) -> int:
+            accumulated_per_variable = np.sum(np.abs(coef_vars_lags), axis=1)
+            return np.argmax(accumulated_per_variable)
+
+        observations = np.vstack(self._autocorr).T
+        n_variables = len(observations)
+        acf_variables = []
+        ccf_variable_pairs = {}
+        for left in range(n_variables):
+            variable_samples = observations[left]
+            nlags = min(len(variable_samples) - 1, self.batches_in_epoch)
+            acf_lags = acf(variable_samples, nlags=nlags)
+            acf_variables.append(acf_lags)
+            for right in range(left + 1, n_variables):
+                ccf_lags = ccf(observations[left], observations[right])
+                ccf_variable_pairs[(left, right)] = ccf_lags[: nlags]
+
+        variable_most_autocorr = strongest_correlation_id(acf_variables)
+        self.viz.bar(X=acf_variables[variable_most_autocorr], win='autocorr',
+                     opts=dict(
+                         xlabel='Lag',
+                         ylabel='ACF',
+                         title=f'Autocorrelation of weight #{variable_most_autocorr}'
+                     ))
+
+        variable_most_crosscorr = strongest_correlation_id(list(ccf_variable_pairs.values()))
+        key_most_crosscorr_pair = list(ccf_variable_pairs.keys())[variable_most_crosscorr]
+        self.viz.bar(X=ccf_variable_pairs[key_most_crosscorr_pair], win='crosscorr',
+                     opts=dict(
+                         xlabel='Lag',
+                         ylabel='CCF',
+                         title=f'Cross-Correlation of weights {key_most_crosscorr_pair}'
+                     ))
+
+    def epoch_finished(self):
+        self._plot_autocorrelation()
