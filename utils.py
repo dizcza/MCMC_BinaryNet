@@ -123,18 +123,34 @@ class AdamCustomDecay(torch.optim.Adam):
 
 class MNISTSmall(torch.utils.data.TensorDataset):
     def __init__(self, labels_keep=(5, 6), resize_to=(5, 5),  train=True):
-        mnist = get_data_loader(dataset='MNIST', train=train, transform=transforms.Resize(size=resize_to))
+        self.train = train
+        data_path = self.get_data_path()
+        if not data_path.exists():
+            mnist = get_data_loader(dataset='MNIST', train=self.train, transform=transforms.Resize(size=resize_to))
+            self.process_mnist(mnist, labels_keep)
+        with open(data_path, 'rb') as f:
+            data, targets = torch.load(f)
+        super().__init__(data_tensor=data, target_tensor=targets)
+
+    def get_data_path(self):
+        return Path('./data').joinpath(self.__class__.__name__, 'train.pt' if self.train else 'test.pt')
+
+    def process_mnist(self, mnist: torch.utils.data.DataLoader, labels_keep: tuple):
         data = []
         targets = []
         for images, labels in tqdm(mnist, desc=f"Preparing {self.__class__.__name__} dataset"):
-            for _image, _label in zip(images, labels):
-                if _label in labels_keep:
-                    new_label = labels_keep.index(_label)
-                    targets.append(new_label)
+            for _image, label_old in zip(images, labels):
+                if label_old in labels_keep:
+                    label_new = labels_keep.index(label_old)
+                    targets.append(label_new)
                     data.append(_image)
         data = torch.cat(data, dim=0)
         targets = torch.LongTensor(targets)
-        super().__init__(data_tensor=data, target_tensor=targets)
+        data_path = self.get_data_path()
+        data_path.parent.mkdir(exist_ok=True, parents=True)
+        with open(data_path, 'wb') as f:
+            torch.save((data, targets), f)
+        print(f"Saved preprocessed data to {data_path}")
 
 
 class MNIST56(MNISTSmall):
