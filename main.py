@@ -7,6 +7,13 @@ from trainer import TrainerGradFullPrecision, TrainerMCMC, TrainerGradBinary
 from utils import StepLRClamp, AdamCustomDecay
 
 
+linear_features = {
+    "MNIST": (28 ** 2, 10),
+    "MNIST56": (5 ** 2, 2),
+    "CIFAR10": (3 * 32 ** 2, 10),
+}
+
+
 class NetBinary(nn.Module):
     def __init__(self, conv_channels, fc_sizes, conv_kernel=3):
         super().__init__()
@@ -47,7 +54,9 @@ class MLP(nn.Module):
         return self.linear(x)
 
 
-def train_gradient(model: nn.Module, is_binary=True, dataset_name="MNIST"):
+def train_gradient(model: nn.Module = None, is_binary=True, dataset_name="MNIST"):
+    if model is None:
+        model = NetBinary(conv_channels=[], fc_sizes=linear_features[dataset_name])
     optimizer = AdamCustomDecay(model.parameters(), lr=1e-2, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10,
                                                            threshold=1e-3, min_lr=1e-4)
@@ -64,16 +73,18 @@ def train_gradient(model: nn.Module, is_binary=True, dataset_name="MNIST"):
     trainer.train(n_epoch=200, debug=0)
 
 
-def train_mcmc(model: nn.Module, dataset_name="MNIST"):
+def train_mcmc(model: nn.Module = None, dataset_name="MNIST"):
+    if model is None:
+        model = MLP(*linear_features[dataset_name])
     model = binarize_model(model)
     trainer = TrainerMCMC(model,
                           criterion=nn.CrossEntropyLoss(),
                           dataset_name=dataset_name,
-                          flip_ratio=0.1)
+                          flip_ratio=0.5)
     trainer.train(n_epoch=500, debug=1)
 
 
 if __name__ == '__main__':
-    # train_gradient(model=NetBinary(conv_channels=[], fc_sizes=[1 * 28 ** 2, 10]), is_binary=True)
-    train_mcmc(model=MLP(in_features=25, out_features=2), dataset_name="MNIST56")
+    # train_gradient(dataset_name="MNIST")
+    train_mcmc(dataset_name="MNIST56")
 

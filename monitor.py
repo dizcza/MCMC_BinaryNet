@@ -277,17 +277,20 @@ class Monitor(object):
             self.log(f"Epoch {epoch}. Best train accuracy so far: {accuracy:.4f}")
 
     def update_autocorrelation(self, sample):
-        self._autocorr.append(sample.numpy())
+        self._autocorr.append(sample.view(-1).numpy())
         epoch = self.batch_id // self.batches_in_epoch
         if (epoch + 1) % 10 == 0:
-            m = np.vstack(self._autocorr)
-            coefs = []
-            for trace in m.T:
-                coef = acf(trace, nlags=min(epoch-1, 30))
-                coefs.append(coef)
-            coef_mean = np.mean(coefs, axis=0)
-            self.viz.line(Y=coef_mean, X=np.arange(len(coef_mean)), win='autocorr', opts=dict(
+            observations = np.vstack(self._autocorr)
+            coefficients = []
+            for weight_samples in observations.T:
+                acf_lags = acf(weight_samples, nlags=min(len(weight_samples)-1, 30))
+                coefficients.append(acf_lags)
+            autocorr_accumulated_per_weight = np.sum(np.abs(coefficients), axis=1)
+            weight_most_autocorr = np.argmax(autocorr_accumulated_per_weight)
+            lags = coefficients[weight_most_autocorr]
+            self.viz.line(Y=lags, X=np.arange(len(lags)), win='autocorr',
+                          opts=dict(
                 xlabel='Epoch',
                 ylabel='ACF',
-                title='Autocorrelation of flipped connections'
+                title=f'Autocorrelation of weight #{weight_most_autocorr}'
             ))
