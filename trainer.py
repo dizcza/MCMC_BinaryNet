@@ -13,7 +13,7 @@ from tqdm import tqdm
 from constants import MODELS_DIR
 from monitor import Monitor, calc_accuracy, get_outputs, get_softmax_accuracy
 from utils import get_data_loader, named_parameters_binary, parameters_binary, load_model_state, MNISTSmall
-from layers import compile_inference
+from layers import compile_inference, ScaleLayer
 
 
 class _Trainer(object):
@@ -24,7 +24,7 @@ class _Trainer(object):
         self.dataset_name = dataset_name
         self.train_loader = get_data_loader(dataset_name, train=True)
         self.monitor = Monitor(self)
-        self._register_monitor_parameters()
+        self._monitor_parameters(self.model)
 
     def save_model(self, accuracy: float = None):
         model_path = MODELS_DIR.joinpath(self.dataset_name, self.model.__class__.__name__).with_suffix('.pt')
@@ -52,9 +52,12 @@ class _Trainer(object):
                 print(f"Couldn't estimate the best accuracy for {self.model.__class__.__name__}. Reset to 0.")
         return best_accuracy
 
-    def _register_monitor_parameters(self):
-        for name, param in named_parameters_binary(self.model):
-            self.monitor.register_param(name, param)
+    def _monitor_parameters(self, model: nn.Module, prefix=''):
+        for name, child in model.named_children():
+            self._monitor_parameters(child, prefix=f'{prefix}.{name}')
+        if isinstance(model, (nn.Linear, nn.Conv2d, ScaleLayer)):
+            for name, param in model.named_parameters(prefix=prefix.lstrip('.')):
+                self.monitor.register_param(name, param)
 
     def _train_batch(self, images, labels):
         raise NotImplementedError()
@@ -95,7 +98,7 @@ class _Trainer(object):
                 best_accuracy = accuracy
 
             self._epoch_finished(epoch, outputs_full, labels_full)
-            self.monitor.epoch_finished()
+            self.monitor.epoch_finished(epoch)
 
 
 class TrainerGradFullPrecision(_Trainer):
@@ -111,10 +114,6 @@ class TrainerGradFullPrecision(_Trainer):
                 ylabel='Learning rate',
                 title='Learning rate'
             ))
-
-    def _register_monitor_parameters(self):
-        for name, param in self.model.named_parameters():
-            self.monitor.register_param(name, param)
 
     def _train_batch(self, images, labels):
         self.optimizer.zero_grad()
@@ -140,10 +139,6 @@ class TrainerGradBinary(TrainerGradFullPrecision):
             param.data.clamp_(min=-1, max=1)
         return outputs, loss
 
-    def _register_monitor_parameters(self):
-        for name, param in named_parameters_binary(self.model):
-            self.monitor.register_param(name, param)
-
 
 class TrainerMCMC(_Trainer):
     def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str, flip_ratio=0.1):
@@ -161,6 +156,7 @@ class TrainerMCMC(_Trainer):
         for param in model.parameters():
             param.requires_grad = False
             param.volatile = True
+        self._monitor_functions()
 
     def get_acceptance_ratio(self) -> float:
         if self.update_calls == 0:
@@ -190,7 +186,7 @@ class TrainerMCMC(_Trainer):
         if proba_draw < mcmc_proba_accept:
             self.accepted_count += 1
             if self.plot_autocorrelation:
-                self.monitor.update_autocorrelation(idx_to_flip)
+                self.monitor.autocorrelation.add_sample(idx_to_flip)
         else:
             # reject
             param_modified.data = data_orig
@@ -239,8 +235,7 @@ class TrainerMCMC(_Trainer):
 
         return param_modified, idx_connection_flip
 
-    def _register_monitor_parameters(self):
-        super()._register_monitor_parameters()
+    def _monitor_functions(self):
         self.monitor.register_func(self.get_acceptance_ratio, opts=dict(
             xlabel='Epoch',
             ylabel='Acceptance ratio',

@@ -20,9 +20,8 @@ class NetBinary(nn.Module):
 
         conv_layers = []
         for (in_features, out_features) in zip(conv_channels[:-1], conv_channels[1:]):
-            # conv_layers.append(nn.BatchNorm2d(in_features))
-            layer = nn.Conv2d(in_features, out_features, kernel_size=conv_kernel, padding=0, bias=False)
-            conv_layers.append(layer)
+            conv_layers.append(nn.BatchNorm2d(in_features))
+            conv_layers.append(nn.Conv2d(in_features, out_features, kernel_size=conv_kernel, padding=0, bias=False))
             conv_layers.append(nn.MaxPool2d(kernel_size=2))
             conv_layers.append(nn.PReLU())
         self.conv_sequential = nn.Sequential(*conv_layers)
@@ -30,8 +29,7 @@ class NetBinary(nn.Module):
         fc_layers = []
         for (in_features, out_features) in zip(fc_sizes[:-1], fc_sizes[1:]):
             fc_layers.append(nn.BatchNorm1d(in_features))
-            layer = nn.Linear(in_features, out_features, bias=False)
-            fc_layers.append(layer)
+            fc_layers.append(nn.Linear(in_features, out_features, bias=False))
             fc_layers.append(nn.PReLU(out_features))
         self.fc_sequential = nn.Sequential(*fc_layers)
         self.scale_layer = ScaleLayer(size=fc_sizes[-1])

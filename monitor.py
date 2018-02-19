@@ -106,30 +106,89 @@ class UpdateTimer(object):
         return False
 
 
-class SignMonitor(object):
-    def __init__(self):
-        self.sign_flips = 0
-        self.calls = 0
-        self.param_sign_before = {}
+class ParamRecord(object):
+    def __init__(self, name: str, param: nn.Parameter):
+        self.name = name
+        self.param = param
+        self.variance = VarianceOnline()
+        self.prev_sign = param.data.clone()  # clone is faster
 
-    def batch_finished(self, named_params: Dict[str, nn.Parameter]):
-        self.calls += 1
-        for name, param in named_params.items():
-            self.sign_flips += torch.sum((param.data * self.param_sign_before[name]) < 0)
-            self.param_sign_before[name] = param.data.clone()
+
+class ParamList(list):
+    def __init__(self):
+        super().__init__()
+        self.sign_flips = 0
+        self.n_updates = 0
+
+    # todo move auto- & cross-correlation here
+    def batch_finished(self):
+        self.n_updates += 1
+        for param_record in self:
+            param = param_record.param
+            self.sign_flips += torch.sum((param.data * param_record.prev_sign) < 0)
+            param_record.prev_sign = param.data.clone()
 
     def get_sign_flips(self):
-        if len(self.param_sign_before) == 0:
+        if len(self) == 0:
             # haven't registered any param yet
             return None
-        param_count = sum(map(torch.numel, self.param_sign_before.values()))
+        param_count = 0
+        for param_record in self:
+            param_count += torch.numel(param_record.param)
         flips = self.sign_flips
         flips /= param_count  # per param
-        flips /= self.calls  # per update
+        flips /= self.n_updates  # per update
         flips *= 100.  # percents
         self.sign_flips = 0
-        self.calls = 0
+        self.n_updates = 0
         return flips
+
+
+class Autocorrelation(object):
+    def __init__(self):
+        self.samples = []
+
+    def add_sample(self, new_sample):
+        self.samples.append(new_sample)
+
+    def plot_acf_ccf(self, viz: visdom.Visdom, nlags=30):
+        if len(self.samples) == 0:
+            return
+
+        def strongest_correlation_id(coef_vars_lags) -> int:
+            accumulated_per_variable = np.sum(np.abs(coef_vars_lags), axis=1)
+            return np.argmax(accumulated_per_variable)
+
+        observations = np.vstack(self.samples).T
+        n_variables = len(observations)
+        acf_variables = []
+        ccf_variable_pairs = {}
+        for left in range(n_variables):
+            variable_samples = observations[left]
+            nlags = min(len(variable_samples) - 1, nlags)
+            acf_lags = acf(variable_samples, nlags=nlags)
+            acf_variables.append(acf_lags)
+            for right in range(left + 1, n_variables):
+                ccf_lags = ccf(observations[left], observations[right])
+                ccf_variable_pairs[(left, right)] = ccf_lags[: nlags]
+
+        variable_most_autocorr = strongest_correlation_id(acf_variables)
+        viz.bar(X=acf_variables[variable_most_autocorr], win='autocorr',
+                opts=dict(
+                    xlabel='Lag',
+                    ylabel='ACF',
+                    title=f'Autocorrelation of weight #{variable_most_autocorr}'
+                ))
+
+        variable_most_crosscorr = strongest_correlation_id(list(ccf_variable_pairs.values()))
+        key_most_crosscorr_pair = list(ccf_variable_pairs.keys())[variable_most_crosscorr]
+        viz.bar(X=ccf_variable_pairs[key_most_crosscorr_pair], win='crosscorr',
+                opts=dict(
+                    xlabel='Lag',
+                    ylabel='CCF',
+                    title=f'Cross-Correlation of weights {key_most_crosscorr_pair}'
+                ))
+        return acf_variables[variable_most_autocorr], ccf_variable_pairs[key_most_crosscorr_pair]
 
 
 class Monitor(object):
@@ -145,10 +204,9 @@ class Monitor(object):
         self.model = trainer.model
         self.batches_in_epoch = len(trainer.train_loader)
         self.batch_id = 0
-        self._registered_params = {}
+        self._registered_params = ParamList()
         self._registered_functions = []
-        self._autocorr = []
-        self.sign_monitor = SignMonitor()
+        self.autocorrelation = Autocorrelation()
         self.timer_update = UpdateTimer(max_skip=self.batches_in_epoch // 2)
         self.log_model(self.model)
         self.log_binary_ratio()
@@ -196,13 +254,13 @@ class Monitor(object):
         self.viz.text(f"{time.strftime('%Y-%b-%d %H:%M')} {text}", win='log', append=self.viz.win_exists(win='log'))
 
     def batch_finished(self, outputs: Variable, labels: Variable, loss: Variable):
-        self.sign_monitor.batch_finished(self._registered_params)
+        self._registered_params.batch_finished()
         if self.timer_update.need_update(self.batch_id):
             self.update_batch_accuracy(batch_accuracy=get_softmax_accuracy(outputs, labels))
             self.update_loss(loss.data[0], mode='batch')
             self.update_distribution()
-            self.update_gradients()
-            self._draw_line(y=self.sign_monitor.get_sign_flips(), win='sign', opts=dict(
+            self.update_gradient_mean_std()
+            self._draw_line(y=self._registered_params.get_sign_flips(), win='sign', opts=dict(
                 xlabel='Epoch',
                 ylabel='Sign flips, %',
                 title="Sign flips after optimizer.step()",
@@ -225,19 +283,15 @@ class Monitor(object):
             title=f'{mode} loss'
         ))
 
-    def register_param(self, param_name: str, param: nn.Parameter = None):
-        if param is None:
-            param = find_param_by_name(self.model, param_name)
-        if param is None:
-            raise ValueError(f"Illegal parameter name to register: {param_name}")
-        self._registered_params[param_name] = param
-        self.sign_monitor.param_sign_before[param_name] = param.data.clone()
+    def register_param(self, name: str, param: nn.Parameter):
+        self._registered_params.append(ParamRecord(name, param))
 
     def register_func(self, func: Callable, opts: dict = None):
         self._registered_functions.append((func, opts))
 
     def update_distribution(self):
-        for name, param in self._registered_params.items():
+        for param_record in self._registered_params:
+            name, param = param_record.name, param_record.param
             if param.numel() == 1:
                 self._draw_line(y=param.data[0], win=name, opts=dict(
                     xlabel='Epoch',
@@ -251,19 +305,24 @@ class Monitor(object):
                     title=name,
                 ))
 
-    def update_gradients(self):
-        norms = []
-        legend = []
-        for name, param in self._registered_params.items():
+    def update_gradient_mean_std(self):
+        for param_record in self._registered_params:
+            name, param = param_record.name, param_record.param
             if param.grad is None:
                 continue
-            norms.append(param.grad.data.norm(p=2) / math.sqrt(param.numel()))
-            legend.append(name)
-        self._draw_line(y=norms, win='grad.norm', opts=dict(
-            xlabel='Epoch',
-            ylabel='Gradient L2 norm / sqrt(n)',
-            legend=legend,
-        ))
+            param_record.variance.update(param.grad.data)
+            mean, std = param_record.variance.get_mean_std()
+            param_norm = param.data.norm(p=2)
+            mean = mean.abs().mean() / param_norm
+            std = std.mean() / param_norm
+            self._draw_line(y=[mean, std], win=f"grad_mean_std_{name}", opts=dict(
+                xlabel='Epoch',
+                ylabel='Normalized mean and STD',
+                title=name,
+                legend=['mean', 'std'],
+                xtype='log',
+                ytype='log',
+            ))
 
     def update_train_accuracy(self, accuracy: float, is_best=False):
         self._draw_line(accuracy, win='train_accuracy', opts=dict(
@@ -276,47 +335,8 @@ class Monitor(object):
             epoch = self.batch_id // self.batches_in_epoch
             self.log(f"Epoch {epoch}. Best train accuracy so far: {accuracy:.4f}")
 
-    def update_autocorrelation(self, sample):
-        self._autocorr.append(sample.view(-1).numpy())
-
-    def _plot_autocorrelation(self):
-        epoch = self.batch_id // self.batches_in_epoch
-        if (epoch + 1) % 5 != 0:
-            return
-
-        def strongest_correlation_id(coef_vars_lags) -> int:
-            accumulated_per_variable = np.sum(np.abs(coef_vars_lags), axis=1)
-            return np.argmax(accumulated_per_variable)
-
-        observations = np.vstack(self._autocorr).T
-        n_variables = len(observations)
-        acf_variables = []
-        ccf_variable_pairs = {}
-        for left in range(n_variables):
-            variable_samples = observations[left]
-            nlags = min(len(variable_samples) - 1, self.batches_in_epoch)
-            acf_lags = acf(variable_samples, nlags=nlags)
-            acf_variables.append(acf_lags)
-            for right in range(left + 1, n_variables):
-                ccf_lags = ccf(observations[left], observations[right])
-                ccf_variable_pairs[(left, right)] = ccf_lags[: nlags]
-
-        variable_most_autocorr = strongest_correlation_id(acf_variables)
-        self.viz.bar(X=acf_variables[variable_most_autocorr], win='autocorr',
-                     opts=dict(
-                         xlabel='Lag',
-                         ylabel='ACF',
-                         title=f'Autocorrelation of weight #{variable_most_autocorr}'
-                     ))
-
-        variable_most_crosscorr = strongest_correlation_id(list(ccf_variable_pairs.values()))
-        key_most_crosscorr_pair = list(ccf_variable_pairs.keys())[variable_most_crosscorr]
-        self.viz.bar(X=ccf_variable_pairs[key_most_crosscorr_pair], win='crosscorr',
-                     opts=dict(
-                         xlabel='Lag',
-                         ylabel='CCF',
-                         title=f'Cross-Correlation of weights {key_most_crosscorr_pair}'
-                     ))
-
-    def epoch_finished(self):
-        self._plot_autocorrelation()
+    def epoch_finished(self, epoch: int = None):
+        if epoch is None:
+            epoch = self.batch_id // self.batches_in_epoch
+        if (epoch + 1) % 5 == 0:
+            self.autocorrelation.plot_acf_ccf(self.viz, nlags=self.batches_in_epoch)

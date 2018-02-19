@@ -29,6 +29,8 @@ def find_param_by_name(model: nn.Module, name_search: str) -> Union[nn.Parameter
 
 def get_data_loader(dataset: str, train=True, batch_size=256, transform=None) -> torch.utils.data.DataLoader:
     transform_list = []
+    if transform is not None:
+        transform_list.append(transform)
     if dataset == "MNIST":
         dataset_cls = datasets.MNIST
         transform_list.append(transforms.ToTensor())
@@ -41,8 +43,6 @@ def get_data_loader(dataset: str, train=True, batch_size=256, transform=None) ->
         transform_list.append(transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)))
     else:
         raise NotImplementedError()
-    if transform is not None:
-        transform_list.insert(0, transform)
     dataset = dataset_cls('data', train=train, download=True, transform=transforms.Compose(transform_list))
     loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
     return loader
