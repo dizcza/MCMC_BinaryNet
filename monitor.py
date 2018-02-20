@@ -313,13 +313,13 @@ class Monitor(object):
             param_record.variance.update(param.grad.data)
             mean, std = param_record.variance.get_mean_std()
             param_norm = param.data.norm(p=2)
-            mean = mean.abs().mean() / param_norm
+            mean = mean.norm(p=2) / param_norm
             std = std.mean() / param_norm
             self._draw_line(y=[mean, std], win=f"grad_mean_std_{name}", opts=dict(
-                xlabel='Epoch',
-                ylabel='Normalized mean and STD',
+                xlabel='Epoch (log)',
+                ylabel='Normalized Mean and STD',
                 title=name,
-                legend=['mean', 'std'],
+                legend=['||Mean(∇Wi)||', 'STD(∇Wi)'],
                 xtype='log',
                 ytype='log',
             ))
