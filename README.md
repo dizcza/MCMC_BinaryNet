@@ -45,16 +45,12 @@ Net(
     (2): MaxPool2d(kernel_size=(2, 2), stride=(2, 2), dilation=(1, 1))
     (3): ReLU(inplace)
   )
-  (linear): Sequential(
-    (0): BatchNorm1d(1690, eps=1e-05, momentum=0.1, affine=True)
-    (1): [Binary]Linear(in_features=1690, out_features=10)
-  )
+  (linear): [Binary]Linear(in_features=1690, out_features=10)
 )
 
 >>> trainer = TrainerMCMC(model_binary,
                           criterion=nn.CrossEntropyLoss(),
                           dataset_name="MNIST",
-                          temperature=1e-3,  # environment temperature (decreases with time)
                           flip_ratio=3e-3)  # flip how many signs of binary weights at MCMC step
 >>> trainer.train(n_epoch=100, debug=False)
 Training progress http://localhost:8097
