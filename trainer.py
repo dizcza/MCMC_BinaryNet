@@ -11,7 +11,7 @@ from torch.optim.lr_scheduler import _LRScheduler, ReduceLROnPlateau
 from tqdm import tqdm
 
 from constants import MODELS_DIR
-from monitor import Monitor, calc_accuracy, get_outputs, get_softmax_accuracy
+from monitor import Monitor, calc_accuracy, get_outputs, argmax_accuracy
 from utils import get_data_loader, named_parameters_binary, parameters_binary, load_model_state, MNISTSmall
 from layers import compile_inference, ScaleLayer
 
@@ -35,29 +35,27 @@ class _Trainer(object):
             msg += f" (train accuracy: {accuracy:.4f})"
         print(msg)
 
-    def load_best_accuracy(self, debug=False) -> float:
+    def load_best_accuracy(self) -> float:
         best_accuracy = 0.
-        if not debug:
-            try:
-                model_state = load_model_state(self.dataset_name, self.model.__class__.__name__)
-                loaded_model = copy.deepcopy(self.model)
-                loaded_model.load_state_dict(model_state)
-                loaded_model.eval()
-                for param in loaded_model.parameters():
-                    param.requires_grad = False
-                    param.volatile = True
-                best_accuracy = calc_accuracy(loaded_model, self.train_loader)
-                del loaded_model
-            except Exception as e:
-                print(f"Couldn't estimate the best accuracy for {self.model.__class__.__name__}. Reset to 0.")
+        try:
+            model_state = load_model_state(self.dataset_name, self.model.__class__.__name__)
+            loaded_model = copy.deepcopy(self.model)
+            loaded_model.load_state_dict(model_state)
+            loaded_model.eval()
+            for param in loaded_model.parameters():
+                param.requires_grad = False
+                param.volatile = True
+            best_accuracy = calc_accuracy(loaded_model, self.train_loader)
+            del loaded_model
+        except Exception as e:
+            print(f"Couldn't estimate the best accuracy for {self.model.__class__.__name__}. Reset to 0.")
         return best_accuracy
 
     def _monitor_parameters(self, model: nn.Module, prefix=''):
         for name, child in model.named_children():
             self._monitor_parameters(child, prefix=f'{prefix}.{name}')
         if isinstance(model, (nn.Linear, nn.Conv2d, ScaleLayer)):
-            for name, param in model.named_parameters(prefix=prefix.lstrip('.')):
-                self.monitor.register_param(name, param)
+            self.monitor.register_layer(model, prefix=prefix.lstrip('.'))
 
     def _train_batch(self, images, labels):
         raise NotImplementedError()
@@ -65,12 +63,20 @@ class _Trainer(object):
     def _epoch_finished(self, epoch, outputs, labels):
         pass
     
-    def train(self, n_epoch=10, debug=False):
+    def train(self, n_epoch=10, save=True, with_mutual_info=False):
+        """
+        :param n_epoch: number of training epochs
+        :param save: save the trained model?
+        :param with_mutual_info: plot the mutual information of layer activations?
+        """
         print(self.model)
         use_cuda = torch.cuda.is_available()
         if use_cuda:
             self.model.cuda()
-        best_accuracy = self.load_best_accuracy(debug)
+        if save:
+            best_accuracy = self.load_best_accuracy()
+        else:
+            best_accuracy = 0.
         self.monitor.log(f"Best train accuracy so far: {best_accuracy:.4f}")
         print(f"Training '{self.model.__class__.__name__}'. "
               f"Best {self.dataset_name} train accuracy so far: {best_accuracy:.4f}")
@@ -88,17 +94,22 @@ class _Trainer(object):
                 outputs, loss = self._train_batch(images, labels)
                 self.monitor.batch_finished(outputs, labels, loss)
 
+            if with_mutual_info:
+                self.monitor.mutual_info.start()
             outputs_full, labels_full = get_outputs(self.model, self.train_loader)
-            accuracy = get_softmax_accuracy(outputs_full, labels_full)
+            if with_mutual_info:
+                self.monitor.mutual_info.finish(labels_full)
+
+            accuracy = argmax_accuracy(outputs_full, labels_full)
             is_best = accuracy > best_accuracy
             self.monitor.update_train_accuracy(accuracy, is_best)
             if is_best:
-                if not debug:
+                if save:
                     self.save_model(accuracy)
                 best_accuracy = accuracy
 
             self._epoch_finished(epoch, outputs_full, labels_full)
-            self.monitor.epoch_finished(epoch)
+            self.monitor.epoch_finished()
 
 
 class TrainerGradFullPrecision(_Trainer):

@@ -1,33 +1,22 @@
 import time
-import math
-from statsmodels.tsa.stattools import acf, ccf
-from typing import Union, List, Dict, Callable
+from typing import Union, List, Callable
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.utils.data
 import visdom
+from sklearn.metrics import mutual_info_score, adjusted_mutual_info_score
+from statsmodels.tsa.stattools import acf, ccf
 from torch.autograd import Variable
 
-from utils import get_data_loader, parameters_binary, find_param_by_name
+from utils import get_data_loader, parameters_binary
 
 
-def get_softmax_accuracy(outputs, labels) -> float:
+def argmax_accuracy(outputs, labels) -> float:
     _, labels_predicted = torch.max(outputs.data, 1)
-    softmax_accuracy = torch.sum(labels.data == labels_predicted) / len(labels)
-    return softmax_accuracy
-
-
-def timer(func):
-    def wrapped(*args, **kwargs):
-        start = time.time()
-        result = func(*args, **kwargs)
-        elapsed = time.time() - start
-        print(f"{func.__name__}: {elapsed:e} sec")
-        return result
-
-    return wrapped
+    accuracy = torch.sum(labels.data == labels_predicted) / len(labels)
+    return accuracy
 
 
 def get_outputs(model: nn.Module, loader: torch.utils.data.DataLoader):
@@ -56,7 +45,7 @@ def calc_accuracy(model: nn.Module, loader: torch.utils.data.DataLoader) -> floa
     if model is None:
         return 0.0
     outputs, labels = get_outputs(model, loader)
-    accuracy = get_softmax_accuracy(outputs, labels)
+    accuracy = argmax_accuracy(outputs, labels)
     return accuracy
 
 
@@ -93,17 +82,28 @@ class VarianceOnline(object):
             return self.mean.clone(), torch.sqrt(self.var)
 
 
-class UpdateTimer(object):
+class BatchTimer(object):
 
-    def __init__(self, max_skip: int):
-        self.max_skip = max_skip
+    def __init__(self, batches_in_epoch: int):
+        self.batches_in_epoch = batches_in_epoch
+        self.batch_id = 0
+        self.max_skip = batches_in_epoch
         self.next_update = 10
 
-    def need_update(self, batch_id: int):
-        if batch_id >= self.next_update:
-            self.next_update = min(int((batch_id + 1) ** 1.1), batch_id + self.max_skip)
+    def need_update(self):
+        if self.batch_id >= self.next_update:
+            self.next_update = min(int((self.batch_id + 1) ** 1.1), self.batch_id + self.max_skip)
             return True
         return False
+
+    def need_epoch_update(self, epoch_update):
+        return (int(self.epoch_progress()) + 1) % epoch_update == 0
+
+    def epoch_progress(self):
+        return self.batch_id / self.batches_in_epoch
+
+    def tick(self):
+        self.batch_id += 1
 
 
 class ParamRecord(object):
@@ -145,14 +145,19 @@ class ParamList(list):
 
 
 class Autocorrelation(object):
-    def __init__(self):
+    def __init__(self, timer: BatchTimer, epoch_update=5):
+        self.timer = timer
         self.samples = []
+        self.epoch_update = epoch_update
 
     def add_sample(self, new_sample):
         self.samples.append(new_sample)
 
-    def plot_acf_ccf(self, viz: visdom.Visdom, nlags=30):
+    def plot(self, viz: visdom.Visdom):
         if len(self.samples) == 0:
+            return
+
+        if not self.timer.need_epoch_update(self.epoch_update):
             return
 
         def strongest_correlation_id(coef_vars_lags) -> int:
@@ -165,7 +170,7 @@ class Autocorrelation(object):
         ccf_variable_pairs = {}
         for left in range(n_variables):
             variable_samples = observations[left]
-            nlags = min(len(variable_samples) - 1, nlags)
+            nlags = min(len(variable_samples) - 1, self.timer.batches_in_epoch)
             acf_lags = acf(variable_samples, nlags=nlags)
             acf_variables.append(acf_lags)
             for right in range(left + 1, n_variables):
@@ -173,22 +178,109 @@ class Autocorrelation(object):
                 ccf_variable_pairs[(left, right)] = ccf_lags[: nlags]
 
         variable_most_autocorr = strongest_correlation_id(acf_variables)
-        viz.bar(X=acf_variables[variable_most_autocorr], win='autocorr',
-                opts=dict(
-                    xlabel='Lag',
-                    ylabel='ACF',
-                    title=f'Autocorrelation of weight #{variable_most_autocorr}'
-                ))
+        viz.bar(X=acf_variables[variable_most_autocorr], win='autocorr', opts=dict(
+            xlabel='Lag',
+            ylabel='ACF',
+            title=f'Autocorrelation of weight #{variable_most_autocorr}'
+        ))
 
         variable_most_crosscorr = strongest_correlation_id(list(ccf_variable_pairs.values()))
         key_most_crosscorr_pair = list(ccf_variable_pairs.keys())[variable_most_crosscorr]
-        viz.bar(X=ccf_variable_pairs[key_most_crosscorr_pair], win='crosscorr',
-                opts=dict(
-                    xlabel='Lag',
-                    ylabel='CCF',
-                    title=f'Cross-Correlation of weights {key_most_crosscorr_pair}'
-                ))
+        viz.bar(X=ccf_variable_pairs[key_most_crosscorr_pair], win='crosscorr', opts=dict(
+            xlabel='Lag',
+            ylabel='CCF',
+            title=f'Cross-Correlation of weights {key_most_crosscorr_pair}'
+        ))
         return acf_variables[variable_most_autocorr], ccf_variable_pairs[key_most_crosscorr_pair]
+
+
+class MutualInfo(object):
+    def __init__(self, timer: BatchTimer, epoch_update=5):
+        self.timer = timer
+        self.layers = {}
+        self.input_layer_name = None
+        self.activations = {
+            'input': [],
+            'target': [],
+        }
+        self.information = None
+        self.is_active = False
+        self.epoch_update = epoch_update
+
+    def register(self, layer: nn.Module, name: str):
+        self.layers[name] = (layer, layer.forward)  # immutable
+        self.activations[name] = []
+
+    def start(self):
+        if not self.timer.need_epoch_update(self.epoch_update):
+            return
+        for name, (layer, forward_orig) in self.layers.items():
+            if layer.forward == forward_orig:
+                layer.forward = self.wrap_forward(layer_name=name, forward_orig=forward_orig)
+        self.is_active = True
+
+    def finish(self, targets: Variable):
+        if not self.is_active:
+            return
+        assert len(targets) == len(self.activations['input']), '#inputs and #outputs should match'
+        self.save_activations(layer_name='target', tensor_variable=targets)
+        for name, (layer, forward_orig) in self.layers.items():
+            layer.forward = forward_orig
+        self.is_active = False
+        self.estimate_mutual_info()
+
+    def wrap_forward(self, layer_name, forward_orig):
+        def forward_and_save(input):
+            assert self.is_active, 'Did you forget to start the job?'
+            if len(self.activations['input']) == 0:
+                self.input_layer_name = layer_name
+            if layer_name == self.input_layer_name:
+                self.save_activations(layer_name='input', tensor_variable=input)
+            output = forward_orig(input)
+            self.save_activations(layer_name, output)
+            return output
+        return forward_and_save
+
+    def save_activations(self, layer_name, tensor_variable):
+        quantized = tensor_variable.data.view(tensor_variable.shape[0], -1) > 0
+        quantized = quantized.numpy().astype(str)
+        patterns = map(''.join, quantized)
+        self.activations[layer_name].extend(patterns)
+
+    def reset(self):
+        for name in self.activations:
+            self.activations[name] = []
+        self.information = None
+
+    def estimate_mutual_info(self):
+        if len(self.activations['input']) == 0:
+            return None
+        self.information = {}
+        hidden_layer_names = set(self.activations.keys()).difference({'input', 'target'})
+        for hname in hidden_layer_names:
+            info_x = mutual_info_score(self.activations['input'], self.activations[hname])
+            info_y = mutual_info_score(self.activations['target'], self.activations[hname])
+            self.information[hname] = (info_x, info_y)
+
+    def plot(self, viz: visdom.Visdom):
+        if self.information is None:
+            return
+        legend = []
+        ys = []
+        xs = []
+        for layer_name, (info_x, info_y) in self.information.items():
+            ys.append(info_y)
+            xs.append(info_x)
+            legend.append(layer_name)
+        title = 'Mutual information plane'
+        viz.line(Y=np.array([ys]), X=np.array([xs]), win=title, opts=dict(
+                     xlabel='I(X, T)',
+                     ylabel='I(T, Y)',
+                     title=title,
+                     legend=legend,
+                 ),
+                 update='append' if viz.win_exists(title) else None)
+        self.reset()
 
 
 class Monitor(object):
@@ -202,12 +294,11 @@ class Monitor(object):
                                      f"{trainer.__class__.__name__} "
                                      f"{time.strftime('%b-%d %H:%M')}")
         self.model = trainer.model
-        self.batches_in_epoch = len(trainer.train_loader)
-        self.batch_id = 0
-        self._registered_params = ParamList()
-        self._registered_functions = []
-        self.autocorrelation = Autocorrelation()
-        self.timer_update = UpdateTimer(max_skip=self.batches_in_epoch // 2)
+        self.timer = BatchTimer(batches_in_epoch=len(trainer.train_loader))
+        self.params = ParamList()
+        self.functions = []
+        self.autocorrelation = Autocorrelation(self.timer)
+        self.mutual_info = MutualInfo(self.timer)
         self.log_model(self.model)
         self.log_binary_ratio()
         self.log_trainer(trainer)
@@ -242,8 +333,7 @@ class Monitor(object):
             return
         if y.ndim > 1 and size == 1:
             y = y[0]
-        epoch_progress = self.batch_id / self.batches_in_epoch
-        x = np.full_like(y, epoch_progress)
+        x = np.full_like(y, self.timer.epoch_progress())
         self.viz.line(Y=y,
                       X=x,
                       win=win,
@@ -254,20 +344,20 @@ class Monitor(object):
         self.viz.text(f"{time.strftime('%Y-%b-%d %H:%M')} {text}", win='log', append=self.viz.win_exists(win='log'))
 
     def batch_finished(self, outputs: Variable, labels: Variable, loss: Variable):
-        self._registered_params.batch_finished()
-        if self.timer_update.need_update(self.batch_id):
-            self.update_batch_accuracy(batch_accuracy=get_softmax_accuracy(outputs, labels))
+        self.params.batch_finished()
+        if self.timer.need_update():
+            self.update_batch_accuracy(batch_accuracy=argmax_accuracy(outputs, labels))
             self.update_loss(loss.data[0], mode='batch')
             self.update_distribution()
             self.update_gradient_mean_std()
-            self._draw_line(y=self._registered_params.get_sign_flips(), win='sign', opts=dict(
+            self._draw_line(y=self.params.get_sign_flips(), win='sign', opts=dict(
                 xlabel='Epoch',
                 ylabel='Sign flips, %',
                 title="Sign flips after optimizer.step()",
             ))
-            for func_id, (func, opts) in enumerate(self._registered_functions):
+            for func_id, (func, opts) in enumerate(self.functions):
                 self._draw_line(y=func(), win=f"func_{func_id}", opts=opts)
-        self.batch_id += 1
+        self.timer.tick()
 
     def update_batch_accuracy(self, batch_accuracy: float):
         self._draw_line(batch_accuracy, win='batch_accuracy', opts=dict(
@@ -283,14 +373,11 @@ class Monitor(object):
             title=f'{mode} loss'
         ))
 
-    def register_param(self, name: str, param: nn.Parameter):
-        self._registered_params.append(ParamRecord(name, param))
-
     def register_func(self, func: Callable, opts: dict = None):
-        self._registered_functions.append((func, opts))
+        self.functions.append((func, opts))
 
     def update_distribution(self):
-        for param_record in self._registered_params:
+        for param_record in self.params:
             name, param = param_record.name, param_record.param
             if param.numel() == 1:
                 self._draw_line(y=param.data[0], win=name, opts=dict(
@@ -306,7 +393,7 @@ class Monitor(object):
                 ))
 
     def update_gradient_mean_std(self):
-        for param_record in self._registered_params:
+        for param_record in self.params:
             name, param = param_record.name, param_record.param
             if param.grad is None:
                 continue
@@ -316,7 +403,7 @@ class Monitor(object):
             mean = mean.norm(p=2) / param_norm
             std = std.mean() / param_norm
             self._draw_line(y=[mean, std], win=f"grad_mean_std_{name}", opts=dict(
-                xlabel='Epoch (log)',
+                xlabel='Epoch',
                 ylabel='Normalized Mean and STD',
                 title=name,
                 legend=['||Mean(∇Wi)||', 'STD(∇Wi)'],
@@ -332,11 +419,14 @@ class Monitor(object):
             markers=True,
         ))
         if is_best:
-            epoch = self.batch_id // self.batches_in_epoch
+            epoch = int(self.timer.epoch_progress())
             self.log(f"Epoch {epoch}. Best train accuracy so far: {accuracy:.4f}")
 
-    def epoch_finished(self, epoch: int = None):
-        if epoch is None:
-            epoch = self.batch_id // self.batches_in_epoch
-        if (epoch + 1) % 5 == 0:
-            self.autocorrelation.plot_acf_ccf(self.viz, nlags=self.batches_in_epoch)
+    def epoch_finished(self):
+        self.autocorrelation.plot(self.viz)
+        self.mutual_info.plot(self.viz)
+
+    def register_layer(self, layer: nn.Module, prefix: str):
+        self.mutual_info.register(layer, name=prefix)
+        for name, param in layer.named_parameters(prefix=prefix):
+            self.params.append(ParamRecord(name, param))

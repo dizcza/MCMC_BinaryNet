@@ -15,7 +15,7 @@ linear_features = {
 
 
 class NetBinary(nn.Module):
-    def __init__(self, conv_channels, fc_sizes, conv_kernel=3):
+    def __init__(self, conv_channels=(), fc_sizes=(), conv_kernel=3, with_scale_layer=False):
         super().__init__()
 
         conv_layers = []
@@ -32,29 +32,42 @@ class NetBinary(nn.Module):
             fc_layers.append(nn.Linear(in_features, out_features, bias=False))
             fc_layers.append(nn.PReLU(out_features))
         self.fc_sequential = nn.Sequential(*fc_layers)
-        self.scale_layer = ScaleLayer(size=fc_sizes[-1])
+        if with_scale_layer:
+            self.scale_layer = ScaleLayer(size=fc_sizes[-1])
+        else:
+            self.scale_layer = None
 
     def forward(self, x):
         x = self.conv_sequential(x)
         x = x.view(x.shape[0], -1)
         x = self.fc_sequential(x)
-        x = self.scale_layer(x)
+        if self.scale_layer is not None:
+            x = self.scale_layer(x)
         return x
 
 
 class MLP(nn.Module):
-    def __init__(self, in_features=28**2, out_features=10):
+    def __init__(self, in_features=28**2, out_features=10, n_hidden=0):
         super().__init__()
-        self.linear = nn.Linear(in_features=in_features, out_features=out_features, bias=False)
+        step = int((out_features - in_features) / (n_hidden + 1))
+        assert step < 0, "Too much hidden layers"
+        fc_sizes = list(range(in_features, out_features, step))
+        fc_layers = []
+        for (hidden_in, hidden_out) in zip(fc_sizes[:-1], fc_sizes[1:]):
+            fc_layers.append(nn.Linear(hidden_in, hidden_out, bias=False))
+            fc_layers.append(nn.ReLU(inplace=True))
+        fc_layers.append(nn.Linear(in_features=fc_sizes[-1], out_features=out_features, bias=False))
+        self.fc_sequential = nn.Sequential(*fc_layers)
 
     def forward(self, x):
         x = x.view(x.shape[0], -1)
-        return self.linear(x)
+        return self.fc_sequential(x)
 
 
-def train_gradient(model: nn.Module = None, is_binary=True, dataset_name="MNIST"):
+def train_gradient(model: nn.Module = None, is_binary=True, dataset_name="MNIST", n_hidden=0):
     if model is None:
-        model = NetBinary(conv_channels=[], fc_sizes=linear_features[dataset_name])
+        # model = NetBinary(conv_channels=[], fc_sizes=linear_features[dataset_name])
+        model = MLP(*linear_features[dataset_name], n_hidden=n_hidden)
     optimizer = AdamCustomDecay(model.parameters(), lr=1e-2, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10,
                                                            threshold=1e-3, min_lr=1e-4)
@@ -68,21 +81,22 @@ def train_gradient(model: nn.Module = None, is_binary=True, dataset_name="MNIST"
                           dataset_name=dataset_name,
                           optimizer=optimizer,
                           scheduler=scheduler)
-    trainer.train(n_epoch=200, debug=0)
+    trainer.train(n_epoch=500, save=False, with_mutual_info=True)
 
 
-def train_mcmc(model: nn.Module = None, dataset_name="MNIST"):
+def train_mcmc(model: nn.Module = None, dataset_name="MNIST", n_hidden=0):
     if model is None:
-        model = MLP(*linear_features[dataset_name])
+        model = MLP(*linear_features[dataset_name], n_hidden=n_hidden)
     model = binarize_model(model)
     trainer = TrainerMCMC(model,
                           criterion=nn.CrossEntropyLoss(),
                           dataset_name=dataset_name,
-                          flip_ratio=0.5)
-    trainer.train(n_epoch=500, debug=1)
+                          flip_ratio=0.1)
+    trainer.train(n_epoch=500, save=False, with_mutual_info=False)
 
 
 if __name__ == '__main__':
-    # train_gradient(dataset_name="MNIST")
-    train_mcmc(dataset_name="MNIST56")
-
+    # train_gradient(is_binary=False, dataset_name="MNIST56")
+    train_gradient(dataset_name="MNIST56", is_binary=False, n_hidden=2)
+    # train_mcmc(dataset_name="MNIST56")
+    # train_mcmc(model=NetBinary(fc_sizes=[5**2, 10, 2]), dataset_name="MNIST56")
