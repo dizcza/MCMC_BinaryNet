@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 import torch.utils.data
 import visdom
-from numpy.core.defchararray import zfill
 from sklearn.metrics import mutual_info_score
 from statsmodels.tsa.stattools import acf, ccf
 from torch.autograd import Variable
@@ -98,7 +97,7 @@ class BatchTimer(object):
         return False
 
     def need_epoch_update(self, epoch_update):
-        return (int(self.epoch_progress()) + 1) % epoch_update == 0
+        return int(self.epoch_progress()) % epoch_update == 0
 
     def epoch_progress(self):
         return self.batch_id / self.batches_in_epoch
@@ -196,7 +195,7 @@ class Autocorrelation(object):
 
 
 class MutualInfo(object):
-    def __init__(self, timer: BatchTimer, quantize=10, epoch_update=1):
+    def __init__(self, timer: BatchTimer, quantize=20, epoch_update=5):
         """
         :param timer: timer to schedule updates
         :param quantize: #bins to split the activations interval into
@@ -265,11 +264,8 @@ class MutualInfo(object):
                 activations = activations.view(activations.shape[0], -1)
                 bins = np.linspace(start=activations.min(), stop=activations.max(), num=self.quantize, endpoint=True)
                 quantized = np.digitize(activations.numpy(), bins, right=True)
-                largest = quantized.max()
-                largest_width = len(str(largest))
-                quantized = zfill(quantized.astype(str), width=largest_width)
-                patterns = map(''.join, quantized)
-                self.activations[layer_name] = list(patterns)
+                unique, inverse = np.unique(quantized, return_inverse=True, axis=0)
+                self.activations[layer_name] = inverse
 
     def estimate_mutual_info(self):
         if len(self.activations['input']) == 0:
