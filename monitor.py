@@ -259,17 +259,17 @@ class MutualInfo(object):
         for layer_name, activations in self.activations.items():
             if layer_name == 'target':
                 assert isinstance(activations, (torch.LongTensor, torch.IntTensor))
-                quantized = activations.numpy()
+                self.activations[layer_name] = activations.numpy()
             else:
                 activations = torch.cat(activations, dim=0)
                 activations = activations.view(activations.shape[0], -1)
                 bins = np.linspace(start=activations.min(), stop=activations.max(), num=self.quantize, endpoint=True)
                 quantized = np.digitize(activations.numpy(), bins, right=True)
-            largest = quantized.max()
-            largest_width = len(str(largest))
-            quantized = zfill(quantized.astype(str), width=largest_width)
-            patterns = map(''.join, quantized)
-            self.activations[layer_name] = list(patterns)
+                largest = quantized.max()
+                largest_width = len(str(largest))
+                quantized = zfill(quantized.astype(str), width=largest_width)
+                patterns = map(''.join, quantized)
+                self.activations[layer_name] = list(patterns)
 
     def estimate_mutual_info(self):
         if len(self.activations['input']) == 0:
@@ -303,6 +303,23 @@ class MutualInfo(object):
         self.reset()
 
 
+class MutualInfoQuantile(MutualInfo):
+
+    def quantize_activations(self):
+        for layer_name, activations in self.activations.items():
+            if layer_name == 'target':
+                assert isinstance(activations, (torch.LongTensor, torch.IntTensor))
+                self.activations[layer_name] = activations.numpy()
+            else:
+                activations = torch.cat(activations, dim=0)
+                activations = activations.view(activations.shape[0], -1)
+                activations = activations > 0
+                unique, inverse = np.unique(activations.numpy(), return_inverse=True, axis=0)
+                bins = np.percentile(inverse, q=np.linspace(start=0, stop=100, num=self.quantize, endpoint=True))
+                quantized = np.digitize(inverse, bins, right=True)
+                self.activations[layer_name] = quantized
+
+
 class Monitor(object):
     # todo: feature maps
 
@@ -313,6 +330,7 @@ class Monitor(object):
         self.viz = visdom.Visdom(env=f"{trainer.dataset_name} "
                                      f"{trainer.__class__.__name__} "
                                      f"{time.strftime('%b-%d %H:%M')}")
+        self.viz.close(env=self.viz.env)
         self.model = trainer.model
         self.timer = BatchTimer(batches_in_epoch=len(trainer.train_loader))
         self.params = ParamList()
