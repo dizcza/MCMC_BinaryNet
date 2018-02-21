@@ -6,7 +6,8 @@ import torch
 import torch.nn as nn
 import torch.utils.data
 import visdom
-from sklearn.metrics import mutual_info_score, adjusted_mutual_info_score
+from numpy.core.defchararray import zfill
+from sklearn.metrics import mutual_info_score
 from statsmodels.tsa.stattools import acf, ccf
 from torch.autograd import Variable
 
@@ -195,8 +196,14 @@ class Autocorrelation(object):
 
 
 class MutualInfo(object):
-    def __init__(self, timer: BatchTimer, epoch_update=5):
+    def __init__(self, timer: BatchTimer, quantize=10, epoch_update=1):
+        """
+        :param timer: timer to schedule updates
+        :param quantize: #bins to split the activations interval into
+        :param epoch_update: timer epoch step
+        """
         self.timer = timer
+        self.quantize = quantize
         self.layers = {}
         self.input_layer_name = None
         self.activations = {
@@ -222,8 +229,7 @@ class MutualInfo(object):
     def finish(self, targets: Variable):
         if not self.is_active:
             return
-        assert len(targets) == len(self.activations['input']), '#inputs and #outputs should match'
-        self.save_activations(layer_name='target', tensor_variable=targets)
+        self.activations['target'] = targets.data
         for name, (layer, forward_orig) in self.layers.items():
             layer.forward = forward_orig
         self.is_active = False
@@ -242,19 +248,33 @@ class MutualInfo(object):
         return forward_and_save
 
     def save_activations(self, layer_name, tensor_variable):
-        quantized = tensor_variable.data.view(tensor_variable.shape[0], -1) > 0
-        quantized = quantized.numpy().astype(str)
-        patterns = map(''.join, quantized)
-        self.activations[layer_name].extend(patterns)
+        self.activations[layer_name].append(tensor_variable.data.clone())
 
     def reset(self):
         for name in self.activations:
             self.activations[name] = []
         self.information = None
 
+    def quantize_activations(self):
+        for layer_name, activations in self.activations.items():
+            if layer_name == 'target':
+                assert isinstance(activations, (torch.LongTensor, torch.IntTensor))
+                quantized = activations.numpy()
+            else:
+                activations = torch.cat(activations, dim=0)
+                activations = activations.view(activations.shape[0], -1)
+                bins = np.linspace(start=activations.min(), stop=activations.max(), num=self.quantize, endpoint=True)
+                quantized = np.digitize(activations.numpy(), bins, right=True)
+            largest = quantized.max()
+            largest_width = len(str(largest))
+            quantized = zfill(quantized.astype(str), width=largest_width)
+            patterns = map(''.join, quantized)
+            self.activations[layer_name] = list(patterns)
+
     def estimate_mutual_info(self):
         if len(self.activations['input']) == 0:
             return None
+        self.quantize_activations()
         self.information = {}
         hidden_layer_names = set(self.activations.keys()).difference({'input', 'target'})
         for hname in hidden_layer_names:
