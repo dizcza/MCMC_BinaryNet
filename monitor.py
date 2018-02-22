@@ -1,5 +1,6 @@
 import time
 from typing import Union, List, Callable
+from collections import defaultdict
 
 import numpy as np
 import torch
@@ -106,6 +107,22 @@ class BatchTimer(object):
         self.batch_id += 1
 
 
+class VisdomMighty(visdom.Visdom):
+    def __init__(self, env: str, timer: BatchTimer):
+        super().__init__(env=env)
+        self.timer = timer
+    
+    def line_update(self, y: Union[float, List[float]], win: str, opts: dict):
+        y = np.array([y])
+        size = y.shape[-1]
+        if size == 0:
+            return
+        if y.ndim > 1 and size == 1:
+            y = y[0]
+        x = np.full_like(y, self.timer.epoch_progress())
+        self.line(Y=y, X=x, win=win, opts=opts, update='append' if self.win_exists(win) else None)
+
+
 class ParamRecord(object):
     def __init__(self, name: str, param: nn.Parameter):
         self.name = name
@@ -195,14 +212,14 @@ class Autocorrelation(object):
 
 
 class MutualInfo(object):
-    def __init__(self, timer: BatchTimer, quantize=20, epoch_update=5):
+    def __init__(self, timer: BatchTimer, quantize=20, epoch_update=1):
         """
         :param timer: timer to schedule updates
         :param quantize: #bins to split the activations interval into
         :param epoch_update: timer epoch step
         """
         self.timer = timer
-        self.quantize = quantize
+        self.quantize = defaultdict(lambda: quantize)
         self.layers = {}
         self.input_layer_name = None
         self.activations = {
@@ -254,6 +271,16 @@ class MutualInfo(object):
             self.activations[name] = []
         self.information = None
 
+    def adjust_compression(self):
+        for layer_name in self.hidden_layer_names():
+            activations = self.activations[layer_name]
+            unique = np.unique(activations)
+            compression = (len(activations) - len(unique)) / len(activations)
+            if compression > 0.9:
+                self.quantize[layer_name] += 1
+            elif compression < 0.1:
+                self.quantize[layer_name] -= 1
+
     def quantize_activations(self):
         for layer_name, activations in self.activations.items():
             if layer_name == 'target':
@@ -262,23 +289,42 @@ class MutualInfo(object):
             else:
                 activations = torch.cat(activations, dim=0)
                 activations = activations.view(activations.shape[0], -1)
-                bins = np.linspace(start=activations.min(), stop=activations.max(), num=self.quantize, endpoint=True)
-                quantized = np.digitize(activations.numpy(), bins, right=True)
+                if torch.equal(activations, activations.round()):
+                    quantized = activations
+                else:
+                    bins = np.linspace(start=activations.min(), stop=activations.max(), num=self.quantize[layer_name],
+                                       endpoint=True)
+                    quantized = np.digitize(activations, bins, right=True)
                 unique, inverse = np.unique(quantized, return_inverse=True, axis=0)
                 self.activations[layer_name] = inverse
+
+    def hidden_layer_names(self):
+        return list(name for name in self.activations.keys() if name not in ('input', 'target'))
 
     def estimate_mutual_info(self):
         if len(self.activations['input']) == 0:
             return None
         self.quantize_activations()
+        self.adjust_compression()
         self.information = {}
-        hidden_layer_names = set(self.activations.keys()).difference({'input', 'target'})
-        for hname in hidden_layer_names:
+        for hname in self.hidden_layer_names():
             info_x = mutual_info_score(self.activations['input'], self.activations[hname])
             info_y = mutual_info_score(self.activations['target'], self.activations[hname])
             self.information[hname] = (info_x, info_y)
 
-    def plot(self, viz: visdom.Visdom):
+    def _plot_quantization(self, viz: VisdomMighty):
+        legend, quantizations = [], []
+        for name in self.hidden_layer_names():
+            legend.append(name)
+            quantizations.append(self.quantize[name])
+        viz.line_update(y=quantizations, win='quantizations', opts=dict(
+            xlabel='Epoch',
+            ylabel='#bins',
+            title='Quantization for MI estimation',
+            legend=legend,
+        ))
+
+    def plot(self, viz: VisdomMighty):
         if self.information is None:
             return
         legend = []
@@ -289,7 +335,10 @@ class MutualInfo(object):
             xs.append(info_x)
             legend.append(layer_name)
         title = 'Mutual information plane'
-        viz.line(Y=np.array([ys]), X=np.array([xs]), win=title, opts=dict(
+        if len(ys) > 1:
+            ys = [ys]
+            xs = [xs]
+        viz.line(Y=np.array(ys), X=np.array(xs), win=title, opts=dict(
                      xlabel='I(X, T)',
                      ylabel='I(T, Y)',
                      title=title,
@@ -297,6 +346,7 @@ class MutualInfo(object):
                  ),
                  update='append' if viz.win_exists(title) else None)
         self.reset()
+        self._plot_quantization(viz)
 
 
 class MutualInfoQuantile(MutualInfo):
@@ -310,8 +360,9 @@ class MutualInfoQuantile(MutualInfo):
                 activations = torch.cat(activations, dim=0)
                 activations = activations.view(activations.shape[0], -1)
                 activations = activations > 0
-                unique, inverse = np.unique(activations.numpy(), return_inverse=True, axis=0)
-                bins = np.percentile(inverse, q=np.linspace(start=0, stop=100, num=self.quantize, endpoint=True))
+                unique, inverse = np.unique(activations, return_inverse=True, axis=0)
+                bins = np.percentile(inverse,
+                                     q=np.linspace(start=0, stop=100, num=self.quantize[layer_name], endpoint=True))
                 quantized = np.digitize(inverse, bins, right=True)
                 self.activations[layer_name] = quantized
 
@@ -323,12 +374,12 @@ class Monitor(object):
         """
         :param trainer: _Trainer instance
         """
-        self.viz = visdom.Visdom(env=f"{trainer.dataset_name} "
-                                     f"{trainer.__class__.__name__} "
-                                     f"{time.strftime('%b-%d %H:%M')}")
+        self.timer = BatchTimer(batches_in_epoch=len(trainer.train_loader))
+        self.viz = VisdomMighty(env=f"{trainer.dataset_name} "
+                                    f"{trainer.__class__.__name__} "
+                                    f"{time.strftime('%b-%d %H:%M')}", timer=self.timer)
         self.viz.close(env=self.viz.env)
         self.model = trainer.model
-        self.timer = BatchTimer(batches_in_epoch=len(trainer.train_loader))
         self.params = ParamList()
         self.functions = []
         self.autocorrelation = Autocorrelation(self.timer)
@@ -360,20 +411,6 @@ class Monitor(object):
             line = space * n_spaces + line
             self.viz.text(line, win='model', append=True)
 
-    def _draw_line(self, y: Union[float, List[float]], win: str, opts: dict):
-        y = np.array([y])
-        size = y.shape[-1]
-        if size == 0:
-            return
-        if y.ndim > 1 and size == 1:
-            y = y[0]
-        x = np.full_like(y, self.timer.epoch_progress())
-        self.viz.line(Y=y,
-                      X=x,
-                      win=win,
-                      opts=opts,
-                      update='append' if self.viz.win_exists(win) else None)
-
     def log(self, text: str):
         self.viz.text(f"{time.strftime('%Y-%b-%d %H:%M')} {text}", win='log', append=self.viz.win_exists(win='log'))
 
@@ -384,24 +421,24 @@ class Monitor(object):
             self.update_loss(loss.data[0], mode='batch')
             self.update_distribution()
             self.update_gradient_mean_std()
-            self._draw_line(y=self.params.get_sign_flips(), win='sign', opts=dict(
+            self.viz.line_update(y=self.params.get_sign_flips(), win='sign', opts=dict(
                 xlabel='Epoch',
                 ylabel='Sign flips, %',
                 title="Sign flips after optimizer.step()",
             ))
             for func_id, (func, opts) in enumerate(self.functions):
-                self._draw_line(y=func(), win=f"func_{func_id}", opts=opts)
+                self.viz.line_update(y=func(), win=f"func_{func_id}", opts=opts)
         self.timer.tick()
 
     def update_batch_accuracy(self, batch_accuracy: float):
-        self._draw_line(batch_accuracy, win='batch_accuracy', opts=dict(
+        self.viz.line_update(batch_accuracy, win='batch_accuracy', opts=dict(
             xlabel='Epoch',
             ylabel='Accuracy',
             title='Train batch accuracy',
         ))
 
     def update_loss(self, loss: float, mode='batch'):
-        self._draw_line(loss, win=f'{mode} loss', opts=dict(
+        self.viz.line_update(loss, win=f'{mode} loss', opts=dict(
             xlabel='Epoch',
             ylabel='Loss',
             title=f'{mode} loss'
@@ -414,7 +451,7 @@ class Monitor(object):
         for param_record in self.params:
             name, param = param_record.name, param_record.param
             if param.numel() == 1:
-                self._draw_line(y=param.data[0], win=name, opts=dict(
+                self.viz.line_update(y=param.data[0], win=name, opts=dict(
                     xlabel='Epoch',
                     ylabel='Value',
                     title=name,
@@ -436,7 +473,7 @@ class Monitor(object):
             param_norm = param.data.norm(p=2)
             mean = mean.norm(p=2) / param_norm
             std = std.mean() / param_norm
-            self._draw_line(y=[mean, std], win=f"grad_mean_std_{name}", opts=dict(
+            self.viz.line_update(y=[mean, std], win=f"grad_mean_std_{name}", opts=dict(
                 xlabel='Epoch',
                 ylabel='Normalized Mean and STD',
                 title=name,
@@ -446,7 +483,7 @@ class Monitor(object):
             ))
 
     def update_train_accuracy(self, accuracy: float, is_best=False):
-        self._draw_line(accuracy, win='train_accuracy', opts=dict(
+        self.viz.line_update(accuracy, win='train_accuracy', opts=dict(
             xlabel='Epoch',
             ylabel='Accuracy',
             title='Train full dataset accuracy',
