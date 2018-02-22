@@ -16,8 +16,12 @@ def parameters_binary(model: nn.Module):
         yield param
 
 
+def is_binary(param: nn.Parameter):
+    return getattr(param, 'is_binary', False)
+
+
 def named_parameters_binary(model: nn.Module):
-    return filter(lambda named_param: getattr(named_param[1], "is_binary", False), model.named_parameters())
+    return filter(lambda named_param: is_binary(named_param[1]), model.named_parameters())
 
 
 def find_param_by_name(model: nn.Module, name_search: str) -> Union[nn.Parameter, None]:
@@ -25,6 +29,12 @@ def find_param_by_name(model: nn.Module, name_search: str) -> Union[nn.Parameter
         if name == name_search:
             return param
     return None
+
+
+def has_binary_params(layer: nn.Module):
+    if layer is None:
+        return False
+    return all(map(is_binary, layer.parameters()))
 
 
 def get_data_loader(dataset: str, train=True, batch_size=256, transform=None) -> torch.utils.data.DataLoader:

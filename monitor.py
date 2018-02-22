@@ -11,7 +11,7 @@ from sklearn.metrics import mutual_info_score
 from statsmodels.tsa.stattools import acf, ccf
 from torch.autograd import Variable
 
-from utils import get_data_loader, parameters_binary
+from utils import get_data_loader, parameters_binary, has_binary_params
 
 
 def argmax_accuracy(outputs, labels) -> float:
@@ -272,7 +272,7 @@ class MutualInfo(object):
         self.information = None
 
     def adjust_compression(self):
-        for layer_name in self.hidden_layer_names():
+        for layer_name in self.hidden_layer_names(skip_binary=True):
             activations = self.activations[layer_name]
             unique = np.unique(activations)
             compression = (len(activations) - len(unique)) / len(activations)
@@ -280,6 +280,12 @@ class MutualInfo(object):
                 self.quantize[layer_name] += 1
             elif compression < 0.1:
                 self.quantize[layer_name] -= 1
+
+    def get_layer(self, name: str):
+        if name not in self.layers:
+            return None
+        layer, func = self.layers[name]
+        return layer
 
     def quantize_activations(self):
         for layer_name, activations in self.activations.items():
@@ -289,7 +295,9 @@ class MutualInfo(object):
             else:
                 activations = torch.cat(activations, dim=0)
                 activations = activations.view(activations.shape[0], -1)
-                if torch.equal(activations, activations.round()):
+                layer = self.get_layer(layer_name)
+                if has_binary_params(layer):
+                    # output from a binary layer is already quantized
                     quantized = activations
                 else:
                     bins = np.linspace(start=activations.min(), stop=activations.max(), num=self.quantize[layer_name],
@@ -298,8 +306,16 @@ class MutualInfo(object):
                 unique, inverse = np.unique(quantized, return_inverse=True, axis=0)
                 self.activations[layer_name] = inverse
 
-    def hidden_layer_names(self):
-        return list(name for name in self.activations.keys() if name not in ('input', 'target'))
+    def hidden_layer_names(self, skip_binary=False):
+        hidden_names = []
+        for name in self.activations:
+            if name in ('input', 'target'):
+                continue
+            layer = self.get_layer(name)
+            if skip_binary and has_binary_params(layer):
+                continue
+            hidden_names.append(name)
+        return hidden_names
 
     def estimate_mutual_info(self):
         if len(self.activations['input']) == 0:
@@ -314,7 +330,7 @@ class MutualInfo(object):
 
     def _plot_quantization(self, viz: VisdomMighty):
         legend, quantizations = [], []
-        for name in self.hidden_layer_names():
+        for name in self.hidden_layer_names(skip_binary=True):
             legend.append(name)
             quantizations.append(self.quantize[name])
         viz.line_update(y=quantizations, win='quantizations', opts=dict(
