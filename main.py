@@ -79,5 +79,6 @@ def train_mcmc(model: nn.Module = None, dataset_name="MNIST"):
 
 
 if __name__ == '__main__':
-    train_gradient(NetBinary(fc_sizes=(25, 1024, 100, 2)), dataset_name="MNIST56", is_binary=True)
+    torch.manual_seed(113)
+    train_gradient(NetBinary(fc_sizes=(25, 17, 13, 5, 2)), dataset_name="MNIST56", is_binary=False)
     # train_mcmc(dataset_name="MNIST56")
