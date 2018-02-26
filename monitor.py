@@ -3,6 +3,7 @@ from typing import Union, List, Callable
 from collections import defaultdict
 
 import numpy as np
+import math
 import torch
 import torch.nn as nn
 import torch.utils.data
@@ -212,14 +213,17 @@ class Autocorrelation(object):
 
 
 class MutualInfo(object):
-    def __init__(self, timer: BatchTimer, quantize=20, epoch_update=1):
+
+    log2e = math.log2(math.e)
+
+    def __init__(self, timer: BatchTimer, epoch_update=1):
         """
         :param timer: timer to schedule updates
-        :param quantize: #bins to split the activations interval into
         :param epoch_update: timer epoch step
         """
         self.timer = timer
-        self.quantize = defaultdict(lambda: quantize)
+        self.n_bins = {}
+        self.n_bins_default = 20  # will be adjusted
         self.layers = {}
         self.input_layer_name = None
         self.activations = {
@@ -271,15 +275,23 @@ class MutualInfo(object):
             self.activations[name] = []
         self.information = None
 
-    def adjust_compression(self):
-        for layer_name in self.hidden_layer_names(skip_binary=True):
-            activations = self.activations[layer_name]
-            unique = np.unique(activations)
+    def adjust_bins(self, activations):
+        dim0_min, _ = activations.min(dim=0)
+        dim0_max, _ = activations.max(dim=0)
+        n_bins = self.n_bins_default
+        bins_id_normed = (activations - dim0_min) / (dim0_max - dim0_min)
+        bins_id_normed = bins_id_normed.numpy()
+        while n_bins > 2:
+            quantized = n_bins * bins_id_normed
+            unique = np.unique(quantized.astype(np.int32), axis=0)
             compression = (len(activations) - len(unique)) / len(activations)
-            if compression > 0.9:
-                self.quantize[layer_name] += 1
-            elif compression < 0.1:
-                self.quantize[layer_name] -= 1
+            if compression > 0.975:
+                n_bins *= 2
+            elif compression < 0.025:
+                n_bins = max(2, int(n_bins / 2))
+            else:
+                break
+        return n_bins
 
     def get_layer(self, name: str):
         if name not in self.layers:
@@ -300,9 +312,12 @@ class MutualInfo(object):
                     # output from a binary layer is already quantized
                     quantized = activations
                 else:
-                    bins = np.linspace(start=activations.min(), stop=activations.max(), num=self.quantize[layer_name],
-                                       endpoint=True)
-                    quantized = np.digitize(activations, bins, right=True)
+                    if layer_name not in self.n_bins:
+                        self.n_bins[layer_name] = self.adjust_bins(activations)
+                    dim0_min, _ = activations.min(dim=0)
+                    dim0_max, _ = activations.max(dim=0)
+                    quantized = self.n_bins[layer_name] * (activations - dim0_min) / (dim0_max - dim0_min)
+                    quantized = quantized.type(torch.LongTensor)
                 unique, inverse = np.unique(quantized, return_inverse=True, axis=0)
                 self.activations[layer_name] = inverse
 
@@ -321,18 +336,18 @@ class MutualInfo(object):
         if len(self.activations['input']) == 0:
             return None
         self.quantize_activations()
-        self.adjust_compression()
         self.information = {}
         for hname in self.hidden_layer_names():
-            info_x = mutual_info_score(self.activations['input'], self.activations[hname])
-            info_y = mutual_info_score(self.activations['target'], self.activations[hname])
+            # in base 2
+            info_x = mutual_info_score(self.activations['input'], self.activations[hname]) * self.log2e
+            info_y = mutual_info_score(self.activations['target'], self.activations[hname]) * self.log2e
             self.information[hname] = (info_x, info_y)
 
     def _plot_quantization(self, viz: VisdomMighty):
         legend, quantizations = [], []
         for name in self.hidden_layer_names(skip_binary=True):
             legend.append(name)
-            quantizations.append(self.quantize[name])
+            quantizations.append(self.n_bins[name])
         viz.line_update(y=quantizations, win='quantizations', opts=dict(
             xlabel='Epoch',
             ylabel='#bins',
@@ -355,8 +370,8 @@ class MutualInfo(object):
             ys = [ys]
             xs = [xs]
         viz.line(Y=np.array(ys), X=np.array(xs), win=title, opts=dict(
-                     xlabel='I(X, T)',
-                     ylabel='I(T, Y)',
+                     xlabel='I(X, T), bits',
+                     ylabel='I(T, Y), bits',
                      title=title,
                      legend=legend,
                  ),
@@ -378,7 +393,7 @@ class MutualInfoQuantile(MutualInfo):
                 activations = activations > 0
                 unique, inverse = np.unique(activations, return_inverse=True, axis=0)
                 bins = np.percentile(inverse,
-                                     q=np.linspace(start=0, stop=100, num=self.quantize[layer_name], endpoint=True))
+                                     q=np.linspace(start=0, stop=100, num=self.n_bins[layer_name], endpoint=True))
                 quantized = np.digitize(inverse, bins, right=True)
                 self.activations[layer_name] = quantized
 
