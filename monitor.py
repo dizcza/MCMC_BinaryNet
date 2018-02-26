@@ -409,7 +409,7 @@ class MutualInfoEqualBins(MutualInfo):
         sig = activations.std(dim=0)
         dim0_min, dim0_max = mean - 2 * sig, mean + 2 * sig
         digitized = n_bins * (activations - dim0_min) / (dim0_max - dim0_min)
-        digitized.clamp_(min=0, max=n_bins-1)
+        digitized.clamp_(min=0, max=n_bins)
         digitized = digitized.type(torch.LongTensor)
         return digitized
 
