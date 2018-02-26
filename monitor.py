@@ -299,7 +299,7 @@ class MutualInfo(object):
                 break
         return n_bins
 
-    def digitize(self, activations, n_bins: int):
+    def digitize(self, activations: torch.FloatTensor, n_bins: int):
         raise NotImplementedError()
 
     def get_layer(self, name: str):
@@ -309,7 +309,7 @@ class MutualInfo(object):
         return layer
 
     @staticmethod
-    def get_compression(activations, digitized) -> float:
+    def get_compression(activations: torch.FloatTensor, digitized) -> float:
         unique = np.unique(digitized, axis=0)
         compression = (len(activations) - len(unique)) / len(activations)
         return compression
@@ -382,45 +382,18 @@ class MutualInfo(object):
 class MutualInfoEqualBins(MutualInfo):
 
     def digitize(self, activations: torch.FloatTensor, n_bins: int) -> torch.FloatTensor:
-        bins_id_normed = self.normalize(activations)
-        digitized = (n_bins * bins_id_normed).type(torch.LongTensor)
-        return digitized
-
-    @staticmethod
-    def normalize(activations: torch.FloatTensor) -> torch.FloatTensor:
-        """
-        :param activations: any tensor
-        :return: tensor with values in range [0, 1]
-        """
         mean = activations.mean(dim=0)
         sig = activations.std(dim=0)
         dim0_min, dim0_max = mean - 2 * sig, mean + 2 * sig
-        activations_normed = (activations - dim0_min) / (dim0_max - dim0_min)
-        activations_normed.clamp_(min=0, max=1)
-        return activations_normed
-
-    # faster than straightforward self.digitize each time
-    def adjust_bins(self, activations: torch.FloatTensor) -> int:
-        n_bins = self.n_bins_default
-        compression_min, compression_max = self.compression_range
-        bins_id_normed = self.normalize(activations).numpy()
-        for trial in range(self.max_trials_adjust):
-            digitized = (n_bins * bins_id_normed).astype(np.int32)
-            compression = self.get_compression(activations, digitized)
-            if compression > compression_max:
-                n_bins *= 2
-            elif compression < compression_min:
-                n_bins = max(2, int(n_bins / 2))
-                if n_bins == 2:
-                    break
-            else:
-                break
-        return n_bins
+        digitized = n_bins * (activations - dim0_min) / (dim0_max - dim0_min)
+        digitized.clamp_(min=0, max=n_bins-1)
+        digitized = digitized.type(torch.LongTensor)
+        return digitized
 
 
 class MutualInfoQuantile(MutualInfo):
 
-    def digitize(self, activations: Union[np.ndarray, torch.FloatTensor], n_bins: int) -> np.ndarray:
+    def digitize(self, activations: torch.FloatTensor, n_bins: int) -> np.ndarray:
         bins = np.percentile(activations,
                              q=np.linspace(start=0, stop=100, num=n_bins, endpoint=True),
                              axis=0)
