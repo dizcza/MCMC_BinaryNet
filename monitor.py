@@ -280,19 +280,30 @@ class MutualInfo(object):
             self.activations[name] = []
         self.information = None
 
-    def adjust_bins(self, activations):
-        dim0_min, _ = activations.min(dim=0)
-        dim0_max, _ = activations.max(dim=0)
-        n_bins = self.n_bins_default
+    @staticmethod
+    def normalize(activations: torch.FloatTensor) -> torch.FloatTensor:
+        """
+        :param activations: any tensor
+        :return: tensor with values in range [0, 1]
+        """
+        mean = activations.mean(dim=0)
+        sig = activations.std(dim=0)
+        dim0_min, dim0_max = mean - 2 * sig, mean + 2 * sig
         bins_id_normed = (activations - dim0_min) / (dim0_max - dim0_min)
+        bins_id_normed.clamp_(min=0, max=1)
+        return bins_id_normed
+
+    def adjust_bins(self, activations: torch.FloatTensor):
+        n_bins = self.n_bins_default
+        bins_id_normed = self.normalize(activations)
         bins_id_normed = bins_id_normed.numpy()
         while n_bins > 2:
             quantized = n_bins * bins_id_normed
             unique = np.unique(quantized.astype(np.int32), axis=0)
             compression = (len(activations) - len(unique)) / len(activations)
-            if compression > 0.975:
+            if compression > 0.9:
                 n_bins *= 2
-            elif compression < 0.025:
+            elif compression < 0.1:
                 n_bins = max(2, int(n_bins / 2))
             else:
                 break
@@ -320,10 +331,8 @@ class MutualInfo(object):
                     if layer_name not in self.n_bins:
                         self.n_bins[layer_name] = self.adjust_bins(activations)
                         self.viz.log(f"[MI] {layer_name}: set n_bins={self.n_bins[layer_name]}")
-                    dim0_min, _ = activations.min(dim=0)
-                    dim0_max, _ = activations.max(dim=0)
-                    quantized = self.n_bins[layer_name] * (activations - dim0_min) / (dim0_max - dim0_min)
-                    quantized = quantized.type(torch.LongTensor)
+                    bins_id_normed = self.normalize(activations)
+                    quantized = (self.n_bins[layer_name] * bins_id_normed).type(torch.LongTensor)
                 unique, inverse = np.unique(quantized, return_inverse=True, axis=0)
                 self.activations[layer_name] = inverse
 
