@@ -21,7 +21,7 @@ def is_binary(param: nn.Parameter):
 
 
 def named_parameters_binary(model: nn.Module):
-    return filter(lambda named_param: is_binary(named_param[1]), model.named_parameters())
+    return [(name, param) for name, param in model.named_parameters() if is_binary(param)]
 
 
 def find_param_by_name(model: nn.Module, name_search: str) -> Union[nn.Parameter, None]:

@@ -1,6 +1,6 @@
 import time
 from typing import Union, List, Callable
-from collections import defaultdict
+from collections import defaultdict, deque
 
 import numpy as np
 import math
@@ -166,13 +166,25 @@ class ParamList(list):
 
 
 class Autocorrelation(object):
-    def __init__(self, timer: BatchTimer, epoch_update=5):
+    def __init__(self, timer: BatchTimer, epoch_update=10):
+        """
+        Auto- & cross-correlation for the flipped weight connections that have been chosen by the TrainerMCMC.
+        Estimation is done for `n_batch` lags, based on the latest `5 * n_batch` samples, where `n_batch` - number of
+        batches in one epoch.
+        :param timer: timer to schedule updates
+        :param epoch_update: see timer.need_epoch_update
+        """
         self.timer = timer
-        self.samples = []
+        deque_length = max(100, 5 * self.timer.batches_in_epoch)
+        self.samples = defaultdict(lambda: deque(maxlen=deque_length))
         self.epoch_update = epoch_update
 
-    def add_sample(self, new_sample):
-        self.samples.append(new_sample)
+    def add_sample(self, name: str, new_sample: torch.ByteTensor):
+        """
+        :param name: param name
+        :param new_sample: boolean matrix of flipped (1) and remained (0) weights
+        """
+        self.samples[name].append(new_sample.view(-1))
 
     def plot(self, viz: visdom.Visdom):
         if len(self.samples) == 0:
@@ -181,38 +193,49 @@ class Autocorrelation(object):
         if not self.timer.need_epoch_update(self.epoch_update):
             return
 
-        def strongest_correlation_id(coef_vars_lags) -> int:
-            accumulated_per_variable = np.sum(np.abs(coef_vars_lags), axis=1)
-            return np.argmax(accumulated_per_variable)
+        def strongest_correlation(coef_vars_lags: dict):
+            values = list(coef_vars_lags.values())
+            keys = list(coef_vars_lags.keys())
+            accumulated_per_variable = np.sum(np.abs(values), axis=1)
+            strongest_id = np.argmax(accumulated_per_variable)
+            return keys[strongest_id], values[strongest_id]
 
-        observations = np.vstack(self.samples).T
-        n_variables = len(observations)
-        acf_variables = []
+        acf_variables = {}
         ccf_variable_pairs = {}
-        for left in range(n_variables):
-            variable_samples = observations[left]
-            nlags = min(len(variable_samples) - 1, self.timer.batches_in_epoch)
-            acf_lags = acf(variable_samples, nlags=nlags)
-            acf_variables.append(acf_lags)
-            for right in range(left + 1, n_variables):
-                ccf_lags = ccf(observations[left], observations[right])
-                ccf_variable_pairs[(left, right)] = ccf_lags[: nlags]
+        for name, samples in self.samples.items():
+            if len(samples) < self.timer.batches_in_epoch + 1:
+                continue
+            observations = torch.stack(samples, dim=0)
+            observations.t_()
+            observations = observations.numpy()
+            variables_active = np.where([len(np.where(diffs)[0]) > 0 for diffs in np.diff(observations, axis=1)])[0]
+            observations = np.take(observations, variables_active, axis=0)
+            n_variables = len(observations)
+            for true_id, left in zip(variables_active, range(n_variables)):
+                variable_samples = observations[left]
+                acf_lags = acf(variable_samples, unbiased=True, nlags=self.timer.batches_in_epoch)
+                acf_variables[f'{name}.{true_id}'] = acf_lags
+                for right in range(left + 1, n_variables):
+                    ccf_lags = ccf(observations[left], observations[right])
+                    ccf_variable_pairs[(left, right)] = ccf_lags[: self.timer.batches_in_epoch]
 
-        variable_most_autocorr = strongest_correlation_id(acf_variables)
-        viz.bar(X=acf_variables[variable_most_autocorr], win='autocorr', opts=dict(
-            xlabel='Lag',
-            ylabel='ACF',
-            title=f'Autocorrelation of weight #{variable_most_autocorr}'
-        ))
+        if len(acf_variables) > 0:
+            weight_name, weight_acf = strongest_correlation(acf_variables)
+            viz.bar(X=weight_acf, win='autocorr', opts=dict(
+                xlabel='Lag',
+                ylabel='ACF',
+                title=f'Autocorrelation of {weight_name}'
+            ))
 
-        variable_most_crosscorr = strongest_correlation_id(list(ccf_variable_pairs.values()))
-        key_most_crosscorr_pair = list(ccf_variable_pairs.keys())[variable_most_crosscorr]
-        viz.bar(X=ccf_variable_pairs[key_most_crosscorr_pair], win='crosscorr', opts=dict(
-            xlabel='Lag',
-            ylabel='CCF',
-            title=f'Cross-Correlation of weights {key_most_crosscorr_pair}'
-        ))
-        return acf_variables[variable_most_autocorr], ccf_variable_pairs[key_most_crosscorr_pair]
+        if len(ccf_variable_pairs) > 0:
+            pair_ids, pair_ccf = strongest_correlation(ccf_variable_pairs)
+            viz.bar(X=pair_ccf, win='crosscorr', opts=dict(
+                xlabel='Lag',
+                ylabel='CCF',
+                ytickmin=0.,
+                ytickmax=1.,
+                title=f'Cross-Correlation of weights {pair_ids}'
+            ))
 
 
 class MutualInfo(object):

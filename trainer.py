@@ -179,7 +179,8 @@ class TrainerMCMC(_Trainer):
         outputs_orig = self.model(images)
         loss_orig = self.criterion(outputs_orig, labels)
 
-        param_modified, idx_to_flip = self.choose_weights_to_flip(parameters_binary(self.model))
+        name_chosen, param_modified = random.choice(named_parameters_binary(self.model))
+        idx_to_flip = self.choose_weights_to_flip(param_modified)
         data_orig = param_modified.data.clone()
         idx_to_flip_cuda = idx_to_flip
         if torch.cuda.is_available():
@@ -197,7 +198,7 @@ class TrainerMCMC(_Trainer):
         if proba_draw < mcmc_proba_accept:
             self.accepted_count += 1
             if self.plot_autocorrelation:
-                self.monitor.autocorrelation.add_sample(idx_to_flip)
+                self.monitor.autocorrelation.add_sample(name_chosen, idx_to_flip)
         else:
             # reject
             param_modified.data = data_orig
@@ -227,8 +228,7 @@ class TrainerMCMC(_Trainer):
             self.flip_ratio = max(self.flip_ratio * 0.7, 1e-4)
             self.reset()
 
-    def choose_weights_to_flip(self, parameters: Iterable[nn.Parameter]):
-        param_modified = random.choice(list(parameters))
+    def choose_weights_to_flip(self, param_modified: nn.Parameter) -> torch.ByteTensor:
         assert param_modified.ndimension() == 2, "For now, only nn.Linear is supported"
 
         def sample_neurons(size):
@@ -244,7 +244,7 @@ class TrainerMCMC(_Trainer):
         idx_connection_flip_output[:, idx_input] = True
         idx_connection_flip[idx_output, :] = idx_connection_flip_output
 
-        return param_modified, idx_connection_flip
+        return idx_connection_flip
 
     def _monitor_functions(self):
         self.monitor.register_func(self.get_acceptance_ratio, opts=dict(
