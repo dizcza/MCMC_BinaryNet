@@ -112,7 +112,7 @@ class VisdomMighty(visdom.Visdom):
     def __init__(self, env: str, timer: BatchTimer):
         super().__init__(env=env)
         self.timer = timer
-    
+
     def line_update(self, y: Union[float, List[float]], win: str, opts: dict):
         y = np.array([y])
         size = y.shape[-1]
@@ -122,6 +122,9 @@ class VisdomMighty(visdom.Visdom):
             y = y[0]
         x = np.full_like(y, self.timer.epoch_progress())
         self.line(Y=y, X=x, win=win, opts=opts, update='append' if self.win_exists(win) else None)
+
+    def log(self, text: str):
+        self.text(f"{time.strftime('%Y-%b-%d %H:%M')} {text}", win='log', append=self.win_exists(win='log'))
 
 
 class ParamRecord(object):
@@ -216,11 +219,13 @@ class MutualInfo(object):
 
     log2e = math.log2(math.e)
 
-    def __init__(self, timer: BatchTimer, epoch_update=1):
+    def __init__(self, viz: VisdomMighty, timer: BatchTimer, epoch_update=1):
         """
+        :param viz: Visdom logger
         :param timer: timer to schedule updates
         :param epoch_update: timer epoch step
         """
+        self.viz = viz
         self.timer = timer
         self.n_bins = {}
         self.n_bins_default = 20  # will be adjusted
@@ -314,6 +319,7 @@ class MutualInfo(object):
                 else:
                     if layer_name not in self.n_bins:
                         self.n_bins[layer_name] = self.adjust_bins(activations)
+                        self.viz.log(f"[MI] {layer_name}: set n_bins={self.n_bins[layer_name]}")
                     dim0_min, _ = activations.min(dim=0)
                     dim0_max, _ = activations.max(dim=0)
                     quantized = self.n_bins[layer_name] * (activations - dim0_min) / (dim0_max - dim0_min)
@@ -343,19 +349,7 @@ class MutualInfo(object):
             info_y = mutual_info_score(self.activations['target'], self.activations[hname]) * self.log2e
             self.information[hname] = (info_x, info_y)
 
-    def _plot_quantization(self, viz: VisdomMighty):
-        legend, quantizations = [], []
-        for name in self.hidden_layer_names(skip_binary=True):
-            legend.append(name)
-            quantizations.append(self.n_bins[name])
-        viz.line_update(y=quantizations, win='quantizations', opts=dict(
-            xlabel='Epoch',
-            ylabel='#bins',
-            title='Quantization for MI estimation',
-            legend=legend,
-        ))
-
-    def plot(self, viz: VisdomMighty):
+    def plot(self):
         if self.information is None:
             return
         legend = []
@@ -369,15 +363,13 @@ class MutualInfo(object):
         if len(ys) > 1:
             ys = [ys]
             xs = [xs]
-        viz.line(Y=np.array(ys), X=np.array(xs), win=title, opts=dict(
-                     xlabel='I(X, T), bits',
-                     ylabel='I(T, Y), bits',
-                     title=title,
-                     legend=legend,
-                 ),
-                 update='append' if viz.win_exists(title) else None)
+        self.viz.line(Y=np.array(ys), X=np.array(xs), win=title, opts=dict(
+            xlabel='I(X, T), bits',
+            ylabel='I(T, Y), bits',
+            title=title,
+            legend=legend,
+        ), update='append' if self.viz.win_exists(title) else None)
         self.reset()
-        self._plot_quantization(viz)
 
 
 class MutualInfoQuantile(MutualInfo):
@@ -414,7 +406,7 @@ class Monitor(object):
         self.params = ParamList()
         self.functions = []
         self.autocorrelation = Autocorrelation(self.timer)
-        self.mutual_info = MutualInfo(self.timer)
+        self.mutual_info = MutualInfo(self.viz, self.timer)
         self.log_model(self.model)
         self.log_binary_ratio()
         self.log_trainer(trainer)
@@ -443,7 +435,7 @@ class Monitor(object):
             self.viz.text(line, win='model', append=True)
 
     def log(self, text: str):
-        self.viz.text(f"{time.strftime('%Y-%b-%d %H:%M')} {text}", win='log', append=self.viz.win_exists(win='log'))
+        self.viz.log(text)
 
     def batch_finished(self, outputs: Variable, labels: Variable, loss: Variable):
         self.params.batch_finished()
@@ -526,7 +518,7 @@ class Monitor(object):
 
     def epoch_finished(self):
         self.autocorrelation.plot(self.viz)
-        self.mutual_info.plot(self.viz)
+        self.mutual_info.plot()
 
     def register_layer(self, layer: nn.Module, prefix: str):
         self.mutual_info.register(layer, name=prefix)
