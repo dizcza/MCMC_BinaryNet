@@ -219,16 +219,20 @@ class MutualInfo(object):
 
     log2e = math.log2(math.e)
 
-    def __init__(self, viz: VisdomMighty, timer: BatchTimer, epoch_update=1):
+    def __init__(self, viz: VisdomMighty, timer: BatchTimer, epoch_update=1, compression_range=(0.1, 0.9)):
         """
         :param viz: Visdom logger
         :param timer: timer to schedule updates
         :param epoch_update: timer epoch step
+        :param compression_range: min & max acceptable quantization compression range
         """
         self.viz = viz
         self.timer = timer
+        self.epoch_update = epoch_update
+        self.compression_range = compression_range
         self.n_bins = {}
         self.n_bins_default = 20  # will be adjusted
+        self.max_trials_adjust = 10
         self.layers = {}
         self.input_layer_name = None
         self.activations = {
@@ -237,7 +241,6 @@ class MutualInfo(object):
         }
         self.information = None
         self.is_active = False
-        self.epoch_update = epoch_update
 
     def register(self, layer: nn.Module, name: str):
         self.layers[name] = (layer, layer.forward)  # immutable
@@ -280,40 +283,36 @@ class MutualInfo(object):
             self.activations[name] = []
         self.information = None
 
-    @staticmethod
-    def normalize(activations: torch.FloatTensor) -> torch.FloatTensor:
-        """
-        :param activations: any tensor
-        :return: tensor with values in range [0, 1]
-        """
-        mean = activations.mean(dim=0)
-        sig = activations.std(dim=0)
-        dim0_min, dim0_max = mean - 2 * sig, mean + 2 * sig
-        bins_id_normed = (activations - dim0_min) / (dim0_max - dim0_min)
-        bins_id_normed.clamp_(min=0, max=1)
-        return bins_id_normed
-
-    def adjust_bins(self, activations: torch.FloatTensor):
+    def adjust_bins(self, activations: torch.FloatTensor) -> int:
         n_bins = self.n_bins_default
-        bins_id_normed = self.normalize(activations)
-        bins_id_normed = bins_id_normed.numpy()
-        while n_bins > 2:
-            quantized = n_bins * bins_id_normed
-            unique = np.unique(quantized.astype(np.int32), axis=0)
-            compression = (len(activations) - len(unique)) / len(activations)
-            if compression > 0.9:
+        compression_min, compression_max = self.compression_range
+        for trial in range(self.max_trials_adjust):
+            digitized = self.digitize(activations, n_bins)
+            compression = self.get_compression(activations, digitized)
+            if compression > compression_max:
                 n_bins *= 2
-            elif compression < 0.1:
+            elif compression < compression_min:
                 n_bins = max(2, int(n_bins / 2))
+                if n_bins == 2:
+                    break
             else:
                 break
         return n_bins
+
+    def digitize(self, activations, n_bins: int):
+        raise NotImplementedError()
 
     def get_layer(self, name: str):
         if name not in self.layers:
             return None
         layer, func = self.layers[name]
         return layer
+
+    @staticmethod
+    def get_compression(activations, digitized) -> float:
+        unique = np.unique(digitized, axis=0)
+        compression = (len(activations) - len(unique)) / len(activations)
+        return compression
 
     def quantize_activations(self):
         for layer_name, activations in self.activations.items():
@@ -325,15 +324,14 @@ class MutualInfo(object):
                 activations = activations.view(activations.shape[0], -1)
                 layer = self.get_layer(layer_name)
                 if has_binary_params(layer):
-                    # output from a binary layer is already quantized
-                    quantized = activations
+                    # output from a binary layer is already digitized
+                    digitized = activations
                 else:
                     if layer_name not in self.n_bins:
                         self.n_bins[layer_name] = self.adjust_bins(activations)
-                        self.viz.log(f"[MI] {layer_name}: set n_bins={self.n_bins[layer_name]}")
-                    bins_id_normed = self.normalize(activations)
-                    quantized = (self.n_bins[layer_name] * bins_id_normed).type(torch.LongTensor)
-                unique, inverse = np.unique(quantized, return_inverse=True, axis=0)
+                        self.viz.log(f"[{self.__class__.__name__}] {layer_name}: set n_bins={self.n_bins[layer_name]}")
+                    digitized = self.digitize(activations, n_bins=self.n_bins[layer_name])
+                unique, inverse = np.unique(digitized, return_inverse=True, axis=0)
                 self.activations[layer_name] = inverse
 
     def hidden_layer_names(self, skip_binary=False):
@@ -381,22 +379,55 @@ class MutualInfo(object):
         self.reset()
 
 
+class MutualInfoEqualBins(MutualInfo):
+
+    def digitize(self, activations: torch.FloatTensor, n_bins: int) -> torch.FloatTensor:
+        bins_id_normed = self.normalize(activations)
+        digitized = (n_bins * bins_id_normed).type(torch.LongTensor)
+        return digitized
+
+    @staticmethod
+    def normalize(activations: torch.FloatTensor) -> torch.FloatTensor:
+        """
+        :param activations: any tensor
+        :return: tensor with values in range [0, 1]
+        """
+        mean = activations.mean(dim=0)
+        sig = activations.std(dim=0)
+        dim0_min, dim0_max = mean - 2 * sig, mean + 2 * sig
+        activations_normed = (activations - dim0_min) / (dim0_max - dim0_min)
+        activations_normed.clamp_(min=0, max=1)
+        return activations_normed
+
+    # faster than straightforward self.digitize each time
+    def adjust_bins(self, activations: torch.FloatTensor) -> int:
+        n_bins = self.n_bins_default
+        compression_min, compression_max = self.compression_range
+        bins_id_normed = self.normalize(activations).numpy()
+        for trial in range(self.max_trials_adjust):
+            digitized = (n_bins * bins_id_normed).astype(np.int32)
+            compression = self.get_compression(activations, digitized)
+            if compression > compression_max:
+                n_bins *= 2
+            elif compression < compression_min:
+                n_bins = max(2, int(n_bins / 2))
+                if n_bins == 2:
+                    break
+            else:
+                break
+        return n_bins
+
+
 class MutualInfoQuantile(MutualInfo):
 
-    def quantize_activations(self):
-        for layer_name, activations in self.activations.items():
-            if layer_name == 'target':
-                assert isinstance(activations, (torch.LongTensor, torch.IntTensor))
-                self.activations[layer_name] = activations.numpy()
-            else:
-                activations = torch.cat(activations, dim=0)
-                activations = activations.view(activations.shape[0], -1)
-                activations = activations > 0
-                unique, inverse = np.unique(activations, return_inverse=True, axis=0)
-                bins = np.percentile(inverse,
-                                     q=np.linspace(start=0, stop=100, num=self.n_bins[layer_name], endpoint=True))
-                quantized = np.digitize(inverse, bins, right=True)
-                self.activations[layer_name] = quantized
+    def digitize(self, activations: Union[np.ndarray, torch.FloatTensor], n_bins: int) -> np.ndarray:
+        bins = np.percentile(activations,
+                             q=np.linspace(start=0, stop=100, num=n_bins, endpoint=True),
+                             axis=0)
+        digitized = np.empty_like(activations, dtype=np.int32)
+        for dim in range(activations.shape[1]):
+            digitized[:, dim] = np.digitize(activations[:, dim], bins[:, dim], right=True)
+        return digitized
 
 
 class Monitor(object):
@@ -415,7 +446,7 @@ class Monitor(object):
         self.params = ParamList()
         self.functions = []
         self.autocorrelation = Autocorrelation(self.timer)
-        self.mutual_info = MutualInfo(self.viz, self.timer)
+        self.mutual_info = MutualInfoEqualBins(self.viz, self.timer)
         self.log_model(self.model)
         self.log_binary_ratio()
         self.log_trainer(trainer)
