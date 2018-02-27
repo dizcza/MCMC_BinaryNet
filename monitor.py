@@ -144,7 +144,7 @@ class ParamRecord(object):
         self.name = name
         self.param = param
         self.variance = VarianceOnline()
-        self.prev_sign = param.data.clone()  # clone is faster
+        self.prev_sign = param.data.cpu().clone()  # clone is faster
 
 
 class ParamList(list):
@@ -158,13 +158,16 @@ class ParamList(list):
         self.n_updates += 1
         for param_record in self:
             param = param_record.param
-            self.sign_flips += torch.sum((param.data * param_record.prev_sign) < 0)
-            param_record.prev_sign = param.data.clone()
+            new_data = param.data.cpu()
+            if new_data is param.data:
+                new_data = new_data.clone()
+            self.sign_flips += torch.sum((new_data * param_record.prev_sign) < 0)
+            param_record.prev_sign = new_data
 
-    def get_sign_flips(self):
+    def plot_sign_flips(self, viz: VisdomMighty):
         if len(self) == 0:
             # haven't registered any param yet
-            return None
+            return
         param_count = 0
         for param_record in self:
             param_count += torch.numel(param_record.param)
@@ -174,7 +177,11 @@ class ParamList(list):
         flips *= 100.  # percents
         self.sign_flips = 0
         self.n_updates = 0
-        return flips
+        viz.line_update(y=flips, win='sign', opts=dict(
+            xlabel='Epoch',
+            ylabel='Sign flips, %',
+            title="Sign flips after optimizer.step()",
+        ))
 
 
 class Autocorrelation(object):
@@ -196,7 +203,7 @@ class Autocorrelation(object):
         :param name: param name
         :param new_sample: boolean matrix of flipped (1) and remained (0) weights
         """
-        self.samples[name].append(new_sample.view(-1))
+        self.samples[name].append(new_sample.cpu().view(-1))
 
     def plot(self, viz: visdom.Visdom):
         if len(self.samples) == 0:
@@ -256,7 +263,7 @@ class MutualInfo(object):
 
     log2e = math.log2(math.e)
 
-    def __init__(self, viz: VisdomMighty, timer: BatchTimer, epoch_update=5, compression_range=(0.1, 0.9)):
+    def __init__(self, viz: VisdomMighty, timer: BatchTimer, epoch_update=5, compression_range=(0.05, 0.95)):
         """
         :param viz: Visdom logger
         :param timer: timer to schedule updates
@@ -294,7 +301,7 @@ class MutualInfo(object):
     def finish(self, targets: Variable):
         if not self.is_active:
             return
-        self.activations['target'] = targets.data
+        self.activations['target'] = targets.data.cpu()
         for name, (layer, forward_orig) in self.layers.items():
             layer.forward = forward_orig
         self.is_active = False
@@ -306,14 +313,14 @@ class MutualInfo(object):
             if len(self.activations['input']) == 0:
                 self.input_layer_name = layer_name
             if layer_name == self.input_layer_name:
-                self.save_activations(layer_name='input', tensor_variable=input)
+                self.save_activations(layer_name='input', tensor=input)
             output = forward_orig(input)
             self.save_activations(layer_name, output)
             return output
         return forward_and_save
 
-    def save_activations(self, layer_name, tensor_variable):
-        self.activations[layer_name].append(tensor_variable.data.clone())
+    def save_activations(self, layer_name: str, tensor: torch.autograd.Variable):
+        self.activations[layer_name].append(tensor.data.cpu().clone())
 
     def reset(self):
         for name in self.activations:
@@ -431,6 +438,7 @@ class MutualInfoEqualBins(MutualInfo):
 class MutualInfoQuantile(MutualInfo):
 
     def digitize(self, activations: torch.FloatTensor, n_bins: int) -> np.ndarray:
+        activations = activations.cpu()
         bins = np.percentile(activations,
                              q=np.linspace(start=0, stop=100, num=n_bins, endpoint=True),
                              axis=0)
@@ -494,11 +502,7 @@ class Monitor(object):
             self.update_loss(loss.data[0], mode='batch')
             self.update_distribution()
             self.update_gradient_mean_std()
-            self.viz.line_update(y=self.params.get_sign_flips(), win='sign', opts=dict(
-                xlabel='Epoch',
-                ylabel='Sign flips, %',
-                title="Sign flips after optimizer.step()",
-            ))
+            self.params.plot_sign_flips(self.viz)
             for func_id, (func, opts) in enumerate(self.functions):
                 self.viz.line_update(y=func(), win=f"func_{func_id}", opts=opts)
         self.timer.tick()
@@ -530,7 +534,7 @@ class Monitor(object):
                     title=name,
                 ))
             else:
-                self.viz.histogram(X=param.data.view(-1), win=name, opts=dict(
+                self.viz.histogram(X=param.data.cpu().view(-1), win=name, opts=dict(
                     xlabel='Param norm',
                     ylabel='# bins (distribution)',
                     title=name,
@@ -541,7 +545,7 @@ class Monitor(object):
             name, param = param_record.name, param_record.param
             if param.grad is None:
                 continue
-            param_record.variance.update(param.grad.data)
+            param_record.variance.update(param.grad.data.cpu())
             mean, std = param_record.variance.get_mean_std()
             param_norm = param.data.norm(p=2)
             mean = mean.norm(p=2) / param_norm

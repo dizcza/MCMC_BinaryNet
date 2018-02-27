@@ -69,16 +69,18 @@ def train_gradient(model: nn.Module = None, is_binary=True, dataset_name="MNIST"
 
 def train_mcmc(model: nn.Module = None, dataset_name="MNIST"):
     if model is None:
-        model = NetBinary(fc_sizes=linear_features[dataset_name])
+        model = NetBinary(fc_sizes=linear_features[dataset_name], batch_norm=False)
     model = binarize_model(model)
     trainer = TrainerMCMC(model,
                           criterion=nn.CrossEntropyLoss(),
                           dataset_name=dataset_name,
                           flip_ratio=0.1)
-    trainer.train(n_epoch=500, save=False, with_mutual_info=False)
+    trainer.train(n_epoch=500, save=False, with_mutual_info=True)
 
 
 if __name__ == '__main__':
+    import random
+    random.seed(113)
     torch.manual_seed(113)
-    train_gradient(NetBinary(fc_sizes=(25, 17, 13, 5, 2)), dataset_name="MNIST56", is_binary=False)
-    # train_mcmc(dataset_name="MNIST56")
+    train_gradient(NetBinary(fc_sizes=(784, 100, 20, 10)), dataset_name="MNIST", is_binary=False)
+    # train_mcmc(NetBinary(fc_sizes=(25, 17, 10, 5, 2), batch_norm=False), dataset_name="MNIST56")

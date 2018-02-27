@@ -55,8 +55,10 @@ class BinaryDecorator(nn.Module):
         super().__init__()
         for param in layer.parameters():
             if as_two_peaks:
-                data_peaks = torch.randn(param.data.shape) / 10 + 0.5
+                data_peaks = 0.5 + 0.1 * torch.randn(param.data.shape)
                 data_peaks[torch.rand(data_peaks.shape) > 0.5] *= -1
+                if param.data.is_cuda:
+                    data_peaks = data_peaks.cuda()
                 param.data = data_peaks
             param.is_binary = True
         self.layer = layer

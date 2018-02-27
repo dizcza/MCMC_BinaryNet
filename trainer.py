@@ -25,6 +25,7 @@ class _Trainer(object):
         self.train_loader = get_data_loader(dataset_name, train=True)
         self.monitor = Monitor(self)
         self._monitor_parameters(self.model)
+        self.volatile = False
 
     def save_model(self, accuracy: float = None):
         model_path = MODELS_DIR.joinpath(self.dataset_name, self.model.__class__.__name__).with_suffix('.pt')
@@ -85,8 +86,8 @@ class _Trainer(object):
             for images, labels in tqdm(self.train_loader,
                                        desc="Epoch {:d}/{:d}".format(epoch, n_epoch),
                                        leave=False):
-                images = Variable(images)
-                labels = Variable(labels)
+                images = Variable(images, volatile=self.volatile)
+                labels = Variable(labels, volatile=self.volatile)
                 if use_cuda:
                     images = images.cuda()
                     labels = labels.cuda()
@@ -155,6 +156,7 @@ class TrainerMCMC(_Trainer):
     def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str, flip_ratio=0.1):
         compile_inference(model)
         super().__init__(model, criterion, dataset_name)
+        self.volatile = True
         self.flip_ratio = flip_ratio
         self.monitor.log(f"Flip ratio: {flip_ratio}")
         self.accepted_count = 0
