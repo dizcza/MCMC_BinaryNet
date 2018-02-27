@@ -15,6 +15,18 @@ from torch.autograd import Variable
 from utils import get_data_loader, parameters_binary, has_binary_params
 
 
+def timer_profile(func):
+    def wrapped(*args, **kwargs):
+        start = time.time()
+        res = func(*args, **kwargs)
+        elapsed = time.time() - start
+        elapsed /= len(args[1])  # fps
+        elapsed *= 1e3
+        print(f"{func.__name__} {elapsed} ms")
+        return res
+    return wrapped
+
+
 def argmax_accuracy(outputs, labels) -> float:
     _, labels_predicted = torch.max(outputs.data, 1)
     accuracy = torch.sum(labels.data == labels_predicted) / len(labels)
@@ -212,12 +224,11 @@ class Autocorrelation(object):
             observations = np.take(observations, variables_active, axis=0)
             n_variables = len(observations)
             for true_id, left in zip(variables_active, range(n_variables)):
-                variable_samples = observations[left]
-                acf_lags = acf(variable_samples, unbiased=True, nlags=self.timer.batches_in_epoch)
+                acf_lags = acf(observations[left], unbiased=True, nlags=self.timer.batches_in_epoch)
                 acf_variables[f'{name}.{true_id}'] = acf_lags
                 for right in range(left + 1, n_variables):
-                    ccf_lags = ccf(observations[left], observations[right])
-                    ccf_variable_pairs[(left, right)] = ccf_lags[: self.timer.batches_in_epoch]
+                    ccf_lags = ccf(observations[left], observations[right], unbiased=True)
+                    ccf_variable_pairs[(left, right)] = ccf_lags
 
         if len(acf_variables) > 0:
             weight_name, weight_acf = strongest_correlation(acf_variables)
@@ -228,6 +239,9 @@ class Autocorrelation(object):
             ))
 
         if len(ccf_variable_pairs) > 0:
+            shortest_length = min(map(len, ccf_variable_pairs.values()))
+            for key, values in ccf_variable_pairs.items():
+                ccf_variable_pairs[key] = values[: shortest_length]
             pair_ids, pair_ccf = strongest_correlation(ccf_variable_pairs)
             viz.bar(X=pair_ccf, win='crosscorr', opts=dict(
                 xlabel='Lag',
@@ -242,7 +256,7 @@ class MutualInfo(object):
 
     log2e = math.log2(math.e)
 
-    def __init__(self, viz: VisdomMighty, timer: BatchTimer, epoch_update=1, compression_range=(0.1, 0.9)):
+    def __init__(self, viz: VisdomMighty, timer: BatchTimer, epoch_update=5, compression_range=(0.1, 0.9)):
         """
         :param viz: Visdom logger
         :param timer: timer to schedule updates
@@ -442,7 +456,7 @@ class Monitor(object):
         self.params = ParamList()
         self.functions = []
         self.autocorrelation = Autocorrelation(self.timer)
-        self.mutual_info = MutualInfoEqualBins(self.viz, self.timer)
+        self.mutual_info = MutualInfoQuantile(self.viz, self.timer)
         self.log_model(self.model)
         self.log_binary_ratio()
         self.log_trainer(trainer)
