@@ -11,7 +11,7 @@ from torch.optim.lr_scheduler import _LRScheduler, ReduceLROnPlateau
 from tqdm import tqdm
 
 from constants import MODELS_DIR
-from monitor import Monitor, calc_accuracy, get_outputs, argmax_accuracy
+from monitor.monitor import Monitor, calc_accuracy, get_outputs, argmax_accuracy
 from utils import get_data_loader, named_parameters_binary, parameters_binary, load_model_state, MNISTSmall
 from layers import compile_inference, ScaleLayer
 
@@ -26,6 +26,7 @@ class _Trainer(object):
         self.monitor = Monitor(self)
         self._monitor_parameters(self.model)
         self.volatile = False
+        self.epoch_update_step = 1
 
     def save_model(self, accuracy: float = None):
         model_path = MODELS_DIR.joinpath(self.dataset_name, self.model.__class__.__name__).with_suffix('.pt')
@@ -95,22 +96,23 @@ class _Trainer(object):
                 outputs, loss = self._train_batch(images, labels)
                 self.monitor.batch_finished(outputs, labels, loss)
 
-            if with_mutual_info:
-                self.monitor.mutual_info.start()
-            outputs_full, labels_full = get_outputs(self.model, self.train_loader)
-            if with_mutual_info:
-                self.monitor.mutual_info.finish(labels_full)
+            if epoch % self.epoch_update_step == 0:
+                if with_mutual_info:
+                    self.monitor.mutual_info.start()
+                outputs_full, labels_full = get_outputs(self.model, self.train_loader)
+                if with_mutual_info:
+                    self.monitor.mutual_info.finish(labels_full)
 
-            accuracy = argmax_accuracy(outputs_full, labels_full)
-            is_best = accuracy > best_accuracy
-            self.monitor.update_train_accuracy(accuracy, is_best)
-            if is_best:
-                if save:
-                    self.save_model(accuracy)
-                best_accuracy = accuracy
+                accuracy = argmax_accuracy(outputs_full, labels_full)
+                is_best = accuracy > best_accuracy
+                self.monitor.update_train_accuracy(accuracy, is_best)
+                if is_best:
+                    if save:
+                        self.save_model(accuracy)
+                    best_accuracy = accuracy
 
-            self._epoch_finished(epoch, outputs_full, labels_full)
-            self.monitor.epoch_finished()
+                self._epoch_finished(epoch, outputs_full, labels_full)
+                self.monitor.epoch_finished()
 
 
 class TrainerGradFullPrecision(_Trainer):
