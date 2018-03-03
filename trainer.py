@@ -84,10 +84,15 @@ class _Trainer(object):
         print(f"Training '{self.model.__class__.__name__}'. "
               f"Best {self.dataset_name} train accuracy so far: {best_accuracy:.4f}")
 
+        eval_loader = torch.utils.data.DataLoader(dataset=self.train_loader.dataset,
+                                                  batch_size=self.train_loader.batch_size,
+                                                  shuffle=False,
+                                                  num_workers=self.train_loader.num_workers)
+
         if with_mutual_info:
             global get_outputs
             get_outputs = self.monitor.mutual_info.decorate_evaluation(get_outputs)
-            self.monitor.mutual_info.capture_input_output(self.train_loader)
+            self.monitor.mutual_info.capture_input_output(eval_loader)
 
         for epoch in range(n_epoch):
             for images, labels in tqdm(self.train_loader,
@@ -103,7 +108,7 @@ class _Trainer(object):
                 self.monitor.batch_finished(outputs, labels, loss)
 
             if epoch % self.epoch_update_step == 0:
-                outputs_full, labels_full = get_outputs(self.model, self.train_loader)
+                outputs_full, labels_full = get_outputs(self.model, eval_loader)
                 accuracy = argmax_accuracy(outputs_full, labels_full)
                 is_best = accuracy > best_accuracy
                 self.monitor.update_train_accuracy(accuracy, is_best)
