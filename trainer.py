@@ -1,7 +1,7 @@
 import copy
 import random
 import math
-from typing import Iterable, Union
+from typing import Union
 
 import torch
 import torch.nn as nn
@@ -11,7 +11,8 @@ from torch.optim.lr_scheduler import _LRScheduler, ReduceLROnPlateau
 from tqdm import tqdm
 
 from constants import MODELS_DIR
-from monitor.monitor import Monitor, calc_accuracy, get_outputs, argmax_accuracy
+from monitor.monitor import Monitor
+from monitor.accuracy import get_outputs, calc_accuracy, argmax_accuracy
 from utils import get_data_loader, named_parameters_binary, parameters_binary, load_model_state, MNISTSmall
 from layers import compile_inference, ScaleLayer
 
@@ -83,6 +84,11 @@ class _Trainer(object):
         print(f"Training '{self.model.__class__.__name__}'. "
               f"Best {self.dataset_name} train accuracy so far: {best_accuracy:.4f}")
 
+        if with_mutual_info:
+            global get_outputs
+            get_outputs = self.monitor.mutual_info.decorate_evaluation(get_outputs)
+            self.monitor.mutual_info.capture_input_output(self.train_loader)
+
         for epoch in range(n_epoch):
             for images, labels in tqdm(self.train_loader,
                                        desc="Epoch {:d}/{:d}".format(epoch, n_epoch),
@@ -97,12 +103,7 @@ class _Trainer(object):
                 self.monitor.batch_finished(outputs, labels, loss)
 
             if epoch % self.epoch_update_step == 0:
-                if with_mutual_info:
-                    self.monitor.mutual_info.start()
                 outputs_full, labels_full = get_outputs(self.model, self.train_loader)
-                if with_mutual_info:
-                    self.monitor.mutual_info.finish(labels_full)
-
                 accuracy = argmax_accuracy(outputs_full, labels_full)
                 is_best = accuracy > best_accuracy
                 self.monitor.update_train_accuracy(accuracy, is_best)
