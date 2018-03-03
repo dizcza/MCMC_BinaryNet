@@ -27,7 +27,6 @@ class _Trainer(object):
         self.monitor = Monitor(self)
         self._monitor_parameters(self.model)
         self.volatile = False
-        self.epoch_update_step = 1
 
     def save_model(self, accuracy: float = None):
         model_path = MODELS_DIR.joinpath(self.dataset_name, self.model.__class__.__name__).with_suffix('.pt')
@@ -66,11 +65,12 @@ class _Trainer(object):
     def _epoch_finished(self, epoch, outputs, labels):
         pass
     
-    def train(self, n_epoch=10, save=True, with_mutual_info=False):
+    def train(self, n_epoch=10, save=True, with_mutual_info=False, epoch_update_step=3):
         """
         :param n_epoch: number of training epochs
         :param save: save the trained model?
         :param with_mutual_info: plot the mutual information of layer activations?
+        :param epoch_update_step: epoch step to run full evaluation
         """
         print(self.model)
         use_cuda = torch.cuda.is_available()
@@ -95,6 +95,7 @@ class _Trainer(object):
             self.monitor.mutual_info.capture_input_output(eval_loader)
 
         for epoch in range(n_epoch):
+            outputs, loss = None, None
             for images, labels in tqdm(self.train_loader,
                                        desc="Epoch {:d}/{:d}".format(epoch, n_epoch),
                                        leave=False):
@@ -105,17 +106,19 @@ class _Trainer(object):
                     labels = labels.cuda()
 
                 outputs, loss = self._train_batch(images, labels)
-                self.monitor.batch_finished(outputs, labels, loss)
+                self.monitor.batch_finished()
 
-            if epoch % self.epoch_update_step == 0:
+            if epoch % epoch_update_step == 0:
+                self.monitor.update_loss(loss=loss.data[0], mode='batch')
                 outputs_full, labels_full = get_outputs(self.model, eval_loader)
                 accuracy = argmax_accuracy(outputs_full, labels_full)
                 is_best = accuracy > best_accuracy
-                self.monitor.update_train_accuracy(accuracy, is_best)
+                self.monitor.update_accuracy(accuracy, mode='full dataset')
                 if is_best:
                     if save:
                         self.save_model(accuracy)
                     best_accuracy = accuracy
+                    self.monitor.log(f"Epoch {epoch}. Best train accuracy so far: {best_accuracy:.4f}")
 
                 self._epoch_finished(epoch, outputs_full, labels_full)
                 self.monitor.epoch_finished()

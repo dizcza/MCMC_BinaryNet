@@ -9,29 +9,25 @@ import torch.nn as nn
 import torch.utils.data
 from sklearn.metrics import mutual_info_score
 
-from monitor.batch_timer import BatchTimer
+from monitor.batch_timer import BatchTimer, Schedulable
 from monitor.mutual_info.kraskov_knn import get_mi as mutual_info_score_knn
 from monitor.viz import VisdomMighty
 
 
-class MutualInfo(ABC):
+class MutualInfo(Schedulable):
 
     log2e = math.log2(math.e)
 
-    def __init__(self, viz: VisdomMighty, timer: BatchTimer, estimate_size: int = np.inf,
-                 compression_range=(0.05, 0.95), epoch_update=10):
+    def __init__(self, viz: VisdomMighty, estimate_size: int = np.inf, compression_range=(0.05, 0.95)):
         """
         :param viz: Visdom logger
-        :param timer: BatchTimer to schedule updates
         :param estimate_size: number of samples to estimate MI from
         :param compression_range: min & max acceptable quantization compression range
-        :param epoch_update: timer epoch step
         """
         self.viz = viz
-        self.timer = timer
+        self.viz.log(f"MI estimate_size={estimate_size}")
         self.estimate_size = estimate_size
         self.compression_range = compression_range
-        self.epoch_update = epoch_update
         self.n_bins = {}
         self.n_bins_default = 20  # will be adjusted
         self.max_trials_adjust = 10
@@ -39,6 +35,13 @@ class MutualInfo(ABC):
         self.activations = defaultdict(list)
         self.information = {}
         self.is_active = False
+
+    def schedule(self, timer: BatchTimer, epoch_update: int = 1):
+        """
+        :param timer: timer to schedule updates
+        :param epoch_update: epochs between updates
+        """
+        self.start_listening = timer.schedule(self.start_listening, epoch_update=epoch_update)
 
     def register(self, layer: nn.Module, name: str):
         self.layers[name] = (layer, layer.forward)  # immutable
@@ -64,8 +67,6 @@ class MutualInfo(ABC):
         self.activations['target'] = self.process(layer_name='target', activations=targets)
 
     def start_listening(self):
-        if not self.timer.need_epoch_update(self.epoch_update):
-            return
         for name, (layer, forward_orig) in self.layers.items():
             if layer.forward == forward_orig:
                 layer.forward = self.wrap_forward(layer_name=name, forward_orig=forward_orig)

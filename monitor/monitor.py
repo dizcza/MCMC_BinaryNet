@@ -4,9 +4,7 @@ from typing import Callable
 import torch
 import torch.nn as nn
 import torch.utils.data
-from torch.autograd import Variable
 
-from monitor.accuracy import argmax_accuracy
 from monitor.autocorrelation import Autocorrelation
 from monitor.batch_timer import BatchTimer
 from monitor.mutual_info.mutual_info import MutualInfoKNN, MutualInfoQuantile, MutualInfoBinFixed, MutualInfoBinFixedFlat
@@ -87,8 +85,13 @@ class Monitor(object):
         self.model = trainer.model
         self.params = ParamList()
         self.functions = []
-        self.autocorrelation = Autocorrelation(self.timer)
-        self.mutual_info = MutualInfoQuantile(self.viz, self.timer)
+
+        self.autocorrelation = Autocorrelation(n_lags=self.timer.batches_in_epoch)
+        self.autocorrelation.schedule(self.timer, epoch_update=10)
+
+        self.mutual_info = MutualInfoQuantile(self.viz)
+        self.mutual_info.schedule(self.timer, epoch_update=10)
+
         self.log_model(self.model)
         self.log_binary_ratio()
         self.log_trainer(trainer)
@@ -119,30 +122,22 @@ class Monitor(object):
     def log(self, text: str):
         self.viz.log(text)
 
-    def batch_finished(self, outputs: Variable, labels: Variable, loss: Variable):
+    def batch_finished(self):
         self.params.batch_finished()
-        if self.timer.need_update():
-            self.update_batch_accuracy(batch_accuracy=argmax_accuracy(outputs, labels))
-            self.update_loss(loss.data[0], mode='batch')
-            self.update_distribution()
-            self.update_gradient_mean_std()
-            self.params.plot_sign_flips(self.viz)
-            for func_id, (func, opts) in enumerate(self.functions):
-                self.viz.line_update(y=func(), win=f"func_{func_id}", opts=opts)
         self.timer.tick()
-
-    def update_batch_accuracy(self, batch_accuracy: float):
-        self.viz.line_update(batch_accuracy, win='batch_accuracy', opts=dict(
-            xlabel='Epoch',
-            ylabel='Accuracy',
-            title='Train batch accuracy',
-        ))
 
     def update_loss(self, loss: float, mode='batch'):
         self.viz.line_update(loss, win=f'{mode} loss', opts=dict(
             xlabel='Epoch',
             ylabel='Loss',
             title=f'{mode} loss'
+        ))
+
+    def update_accuracy(self, accuracy: float, mode='batch'):
+        self.viz.line_update(accuracy, win=f'{mode} accuracy', opts=dict(
+            xlabel='Epoch',
+            ylabel='Loss',
+            title=f'Train {mode} accuracy'
         ))
 
     def register_func(self, func: Callable, opts: dict = None):
@@ -183,20 +178,14 @@ class Monitor(object):
                 ytype='log',
             ))
 
-    def update_train_accuracy(self, accuracy: float, is_best=False):
-        self.viz.line_update(accuracy, win='train_accuracy', opts=dict(
-            xlabel='Epoch',
-            ylabel='Accuracy',
-            title='Train full dataset accuracy',
-            markers=True,
-        ))
-        if is_best:
-            epoch = int(self.timer.epoch_progress())
-            self.log(f"Epoch {epoch}. Best train accuracy so far: {accuracy:.4f}")
-
     def epoch_finished(self):
         self.autocorrelation.plot(self.viz)
         self.mutual_info.plot()
+        self.params.plot_sign_flips(self.viz)
+        for func_id, (func, opts) in enumerate(self.functions):
+            self.viz.line_update(y=func(), win=f"func_{func_id}", opts=opts)
+        self.update_gradient_mean_std()
+        self.update_distribution()
 
     def register_layer(self, layer: nn.Module, prefix: str):
         self.mutual_info.register(layer, name=prefix)
