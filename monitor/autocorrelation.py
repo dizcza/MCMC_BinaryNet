@@ -1,4 +1,5 @@
 from collections import defaultdict, deque
+from typing import Iterable
 
 import numpy as np
 import torch
@@ -9,22 +10,25 @@ from monitor.batch_timer import BatchTimer, Schedulable
 
 
 class Autocorrelation(Schedulable):
-    def __init__(self, n_lags: int = 40, with_cross_correlation=False):
+    def __init__(self, n_lags: int = 40, with_autocorrelation=True, with_cross_correlation=False):
         """
         Auto- & cross-correlation for the flipped weight connections that have been chosen by the TrainerMCMC.
         Estimation is based on the latest ~`n_lags` samples.
         """
+        with_cross_correlation &= with_autocorrelation
         self.n_lags = n_lags
+        self.with_autocorrelation = with_autocorrelation
         self.with_cross_correlation = with_cross_correlation
         deque_length = max(100, 5 * self.n_lags)
         self.samples = defaultdict(lambda: deque(maxlen=deque_length))
 
-    def add_sample(self, name: str, new_sample: torch.ByteTensor):
+    def add_samples(self, param_flips: Iterable):
         """
-        :param name: param name
-        :param new_sample: boolean matrix of flipped (1) and remained (0) weights
+        :param param_flips: Iterable of ParameterFLip
         """
-        self.samples[name].append(new_sample.cpu().view(-1))
+        if self.with_autocorrelation:
+            for pflip in param_flips:
+                self.samples[pflip.name].append(pflip.get_idx_flipped().cpu().view(-1))
 
     def schedule(self, timer: BatchTimer, epoch_update: int = 1):
         """
@@ -54,11 +58,11 @@ class Autocorrelation(Schedulable):
             observations = np.take(observations, variables_active, axis=0)
             n_variables = len(observations)
             for true_id, left in zip(variables_active, range(n_variables)):
-                acf_lags = acf(observations[left], unbiased=True, nlags=self.n_lags)
+                acf_lags = acf(observations[left], unbiased=False, nlags=self.n_lags, fft=True, missing='raise')
                 acf_variables[f'{name}.{true_id}'] = acf_lags
                 if self.with_cross_correlation:
                     for right in range(left + 1, n_variables):
-                        ccf_lags = ccf(observations[left], observations[right], unbiased=True)
+                        ccf_lags = ccf(observations[left], observations[right], unbiased=False)
                         ccf_variable_pairs[(left, right)] = ccf_lags
 
         if len(acf_variables) > 0:

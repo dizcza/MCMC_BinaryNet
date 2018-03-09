@@ -4,6 +4,9 @@
 # datasets
 data/
 
+# graphviz
+graphs/
+
 # binary models
 models_bin/
 

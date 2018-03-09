@@ -6,3 +6,5 @@ visdom==0.1.7
 statsmodels==0.8.0
 scikit-learn
 scipy
+graphviz
+imageio

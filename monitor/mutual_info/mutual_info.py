@@ -173,7 +173,7 @@ class MutualInfoBin(MutualInfo):
 
     @abstractmethod
     def digitize(self, activations: torch.FloatTensor, n_bins: int):
-        raise NotImplementedError()
+        pass
 
 
 class MutualInfoBinFixed(MutualInfoBin):

@@ -7,10 +7,12 @@ import torch.utils.data
 
 from monitor.autocorrelation import Autocorrelation
 from monitor.batch_timer import BatchTimer
-from monitor.mutual_info.mutual_info import MutualInfoKNN, MutualInfoQuantile, MutualInfoBinFixed, MutualInfoBinFixedFlat
+from monitor.mutual_info.mutual_info import MutualInfoKNN, MutualInfoQuantile, MutualInfoBinFixed, \
+    MutualInfoBinFixedFlat
 from monitor.var_online import VarianceOnline
 from monitor.viz import VisdomMighty
-from utils import parameters_binary
+from monitor.graph import GraphMCMC
+from utils import named_parameters_binary, parameters_binary, MNISTSmall
 
 
 def timer_profile(func):
@@ -22,6 +24,7 @@ def timer_profile(func):
         elapsed *= 1e3
         print(f"{func.__name__} {elapsed} ms")
         return res
+
     return wrapped
 
 
@@ -75,7 +78,7 @@ class Monitor(object):
 
     def __init__(self, trainer):
         """
-        :param trainer: _Trainer instance
+        :param trainer: Trainer instance
         """
         self.timer = BatchTimer(batches_in_epoch=len(trainer.train_loader))
         self.viz = VisdomMighty(env=f"{trainer.dataset_name} "
@@ -84,14 +87,9 @@ class Monitor(object):
         self.viz.close(env=self.viz.env)
         self.model = trainer.model
         self.params = ParamList()
-        self.functions = []
-
-        self.autocorrelation = Autocorrelation(n_lags=self.timer.batches_in_epoch)
-        self.autocorrelation.schedule(self.timer, epoch_update=10)
-
         self.mutual_info = MutualInfoQuantile(self.viz)
         self.mutual_info.schedule(self.timer, epoch_update=10)
-
+        self.functions = []
         self.log_model(self.model)
         self.log_binary_ratio()
         self.log_trainer(trainer)
@@ -179,15 +177,36 @@ class Monitor(object):
             ))
 
     def epoch_finished(self):
-        self.autocorrelation.plot(self.viz)
         self.mutual_info.plot()
         self.params.plot_sign_flips(self.viz)
         for func_id, (func, opts) in enumerate(self.functions):
             self.viz.line_update(y=func(), win=f"func_{func_id}", opts=opts)
         self.update_gradient_mean_std()
-        self.update_distribution()
+        # self.update_distribution()
 
     def register_layer(self, layer: nn.Module, prefix: str):
         self.mutual_info.register(layer, name=prefix)
         for name, param in layer.named_parameters(prefix=prefix):
             self.params.append(ParamRecord(name, param))
+
+
+class MonitorMCMC(Monitor):
+
+    def __init__(self, trainer):
+        super().__init__(trainer)
+        self.autocorrelation = Autocorrelation(n_lags=self.timer.batches_in_epoch,
+                                               with_autocorrelation=isinstance(trainer.train_loader.dataset,
+                                                                               MNISTSmall))
+        self.autocorrelation.schedule(self.timer, epoch_update=10)
+        self.graph_mcmc = GraphMCMC(named_params=named_parameters_binary(self.model), timer=self.timer,
+                                    history_heatmap=True)
+        self.graph_mcmc.schedule(self.timer, epoch_update=1)
+
+    def mcmc_step(self, param_flips):
+        self.autocorrelation.add_samples(param_flips)
+        self.graph_mcmc.save_samples(param_flips)
+
+    def epoch_finished(self):
+        super().epoch_finished()
+        self.autocorrelation.plot(self.viz)
+        self.graph_mcmc.render(self.viz)
