@@ -7,11 +7,10 @@ import torch.utils.data
 
 from monitor.autocorrelation import Autocorrelation
 from monitor.batch_timer import BatchTimer
-from monitor.mutual_info.mutual_info import MutualInfoKNN, MutualInfoQuantile, MutualInfoBinFixed, \
-    MutualInfoBinFixedFlat
+from monitor.graph import GraphMCMC
+from monitor.mutual_info.mutual_info import MutualInfoKMeans
 from monitor.var_online import VarianceOnline
 from monitor.viz import VisdomMighty
-from monitor.graph import GraphMCMC
 from utils import named_parameters_binary, parameters_binary, MNISTSmall
 
 
@@ -84,16 +83,14 @@ class Monitor(object):
         self.viz = VisdomMighty(env=f"{trainer.dataset_name} "
                                     f"{trainer.__class__.__name__} "
                                     f"{time.strftime('%b-%d %H:%M')}", timer=self.timer)
-        self.viz.close(env=self.viz.env)
         self.model = trainer.model
         self.params = ParamList()
-        self.mutual_info = MutualInfoQuantile(self.viz)
-        self.mutual_info.schedule(self.timer, epoch_update=10)
+        self.mutual_info = MutualInfoKMeans(self.viz, estimate_size=int(1e4), debug=False)
+        self.mutual_info.schedule(self.timer, epoch_update=0, batch_update=2)
         self.functions = []
         self.log_model(self.model)
         self.log_binary_ratio()
         self.log_trainer(trainer)
-        print(f"Monitor is opened at http://localhost:8097. Choose environment '{self.viz.env}'.")
 
     def log_trainer(self, trainer):
         self.log(f"Criterion: {trainer.criterion}")
@@ -111,11 +108,10 @@ class Monitor(object):
                  f" = {100. * n_params_binary / n_params_full:.2f} %")
 
     def log_model(self, model: nn.Module, space='-'):
-        self.viz.text("", win='model')
         for line in repr(model).splitlines():
             n_spaces = len(line) - len(line.lstrip())
             line = space * n_spaces + line
-            self.viz.text(line, win='model', append=True)
+            self.viz.text(line, win='log', append=self.viz.win_exists('log'))
 
     def log(self, text: str):
         self.viz.log(text)
@@ -123,20 +119,21 @@ class Monitor(object):
     def batch_finished(self):
         self.params.batch_finished()
         self.timer.tick()
+        self.mutual_info.update(self.model)
 
     def update_loss(self, loss: float, mode='batch'):
-        self.viz.line_update(loss, win=f'{mode} loss', opts=dict(
+        self.viz.line_update(loss, win=f'loss', opts=dict(
             xlabel='Epoch',
             ylabel='Loss',
-            title=f'{mode} loss'
-        ))
+            title=f'Loss'
+        ), name=mode)
 
     def update_accuracy(self, accuracy: float, mode='batch'):
-        self.viz.line_update(accuracy, win=f'{mode} accuracy', opts=dict(
+        self.viz.line_update(accuracy, win=f'accuracy', opts=dict(
             xlabel='Epoch',
             ylabel='Loss',
-            title=f'Train {mode} accuracy'
-        ))
+            title=f'Train accuracy'
+        ), name=mode)
 
     def register_func(self, func: Callable, opts: dict = None):
         self.functions.append((func, opts))
@@ -176,7 +173,12 @@ class Monitor(object):
                 ytype='log',
             ))
 
+    def update_timings(self):
+        self.viz.text(f'Batch duration: {self.timer.batch_duration(): .2e} ms', win='status')
+        self.viz.text(f'Epoch duration: {self.timer.epoch_duration(): .2e} ms', win='status', append=True)
+
     def epoch_finished(self):
+        self.update_timings()
         self.mutual_info.plot()
         self.params.plot_sign_flips(self.viz)
         for func_id, (func, opts) in enumerate(self.functions):
@@ -204,7 +206,7 @@ class MonitorMCMC(Monitor):
 
     def mcmc_step(self, param_flips):
         self.autocorrelation.add_samples(param_flips)
-        self.graph_mcmc.save_samples(param_flips)
+        self.graph_mcmc.add_samples(param_flips)
 
     def epoch_finished(self):
         super().epoch_finished()

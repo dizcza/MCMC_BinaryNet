@@ -71,11 +71,11 @@ def train_mcmc(model: nn.Module = None, dataset_name="MNIST"):
     if model is None:
         model = NetBinary(fc_sizes=linear_features[dataset_name], batch_norm=False)
     model = binarize_model(model)
-    trainer = TrainerMCMCTree(model,
+    trainer = TrainerMCMC(model,
                           criterion=nn.CrossEntropyLoss(),
                           dataset_name=dataset_name,
                           flip_ratio=0.1)
-    trainer.train(n_epoch=500, save=False, with_mutual_info=True, epoch_update_step=1)
+    trainer.train(n_epoch=500, save=False, with_mutual_info=False, epoch_update_step=3)
 
 
 def set_seed(seed: int):
@@ -88,5 +88,6 @@ def set_seed(seed: int):
 
 if __name__ == '__main__':
     set_seed(seed=113)
-    # train_gradient(NetBinary(fc_sizes=(25, 17, 10, 5, 2), batch_norm=False), dataset_name="MNIST56", is_binary=False)
-    train_mcmc(NetBinary(fc_sizes=(25, 17, 10, 5, 2), batch_norm=False), dataset_name="MNIST56")
+    # train_gradient(NetBinary(fc_sizes=(784, 100, 20, 10), batch_norm=False), is_binary=False, dataset_name="MNIST")
+    train_gradient(NetBinary(fc_sizes=(25, 17, 10, 5, 2), batch_norm=False), dataset_name="MNIST56", is_binary=False)
+    # train_mcmc(NetBinary(fc_sizes=(25, 2), batch_norm=False), dataset_name="MNIST56")

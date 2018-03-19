@@ -64,7 +64,7 @@ class GraphMCMC(Schedulable):
             source_name = name
         return pnodes
 
-    def save_samples(self, param_flips: Iterable):
+    def add_samples(self, param_flips: Iterable):
         for pflip in param_flips:
             assert pflip.name in self.param_nodes, f"Unexpected model parameter '{pflip.name}'. " \
                                                    f"Did you forget to pass it in the constructor?"
@@ -83,7 +83,7 @@ class GraphMCMC(Schedulable):
         for pflip in param_flips:
             self.param_nodes[pflip.name].save_activations(new_source=pflip.source, new_sink=pflip.sink)
 
-    def schedule(self, timer: BatchTimer, epoch_update: int = 1):
+    def schedule(self, timer: BatchTimer, epoch_update: int = 1, batch_update: int = 0):
         self.render = timer.schedule(self.render, epoch_update=epoch_update)
         self.save_sample_activations = timer.schedule(self.save_sample_activations, epoch_update=1)
 

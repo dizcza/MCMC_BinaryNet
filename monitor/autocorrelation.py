@@ -28,24 +28,25 @@ class Autocorrelation(Schedulable):
         """
         if self.with_autocorrelation:
             for pflip in param_flips:
-                self.samples[pflip.name].append(pflip.get_idx_flipped().cpu().view(-1))
+                self.samples[pflip.name].append(pflip.param.data.cpu().view(-1))
 
-    def schedule(self, timer: BatchTimer, epoch_update: int = 1):
+    def schedule(self, timer: BatchTimer, epoch_update: int = 1, batch_update: int = 0):
         """
         :param timer: timer to schedule updates
         :param epoch_update: epochs between updates
+        :param batch_update: batches between updates (additional to epochs)
         """
-        self.plot = timer.schedule(self.plot, epoch_update=epoch_update)
-
-    @staticmethod
-    def strongest_correlation(coef_vars_lags: dict):
-        values = list(coef_vars_lags.values())
-        keys = list(coef_vars_lags.keys())
-        accumulated_per_variable = np.sum(np.abs(values), axis=1)
-        strongest_id = np.argmax(accumulated_per_variable)
-        return keys[strongest_id], values[strongest_id]
+        self.plot = timer.schedule(self.plot, epoch_update=epoch_update, batch_update=batch_update)
 
     def plot(self, viz: visdom.Visdom):
+
+        def strongest_correlation(coef_vars_lags: dict):
+            values = list(coef_vars_lags.values())
+            keys = list(coef_vars_lags.keys())
+            accumulated_per_variable = np.sum(np.abs(values), axis=1)
+            strongest_id = np.argmax(accumulated_per_variable)
+            return keys[strongest_id], values[strongest_id]
+
         acf_variables = {}
         ccf_variable_pairs = {}
         for name, samples in self.samples.items():
@@ -54,34 +55,33 @@ class Autocorrelation(Schedulable):
             observations = torch.stack(samples, dim=0)
             observations.t_()
             observations = observations.numpy()
-            variables_active = np.where([len(np.where(diffs)[0]) > 0 for diffs in np.diff(observations, axis=1)])[0]
-            observations = np.take(observations, variables_active, axis=0)
-            n_variables = len(observations)
-            for true_id, left in zip(variables_active, range(n_variables)):
-                acf_lags = acf(observations[left], unbiased=False, nlags=self.n_lags, fft=True, missing='raise')
-                acf_variables[f'{name}.{true_id}'] = acf_lags
+            active_rows_mask = list(map(np.any, np.diff(observations, axis=1)))
+            active_rows = np.where(active_rows_mask)[0]
+            for i, active_row in enumerate(active_rows):
+                acf_lags = acf(observations[active_row], unbiased=False, nlags=self.n_lags, fft=True, missing='raise')
+                acf_variables[f'{name}.{active_row}'] = acf_lags
                 if self.with_cross_correlation:
-                    for right in range(left + 1, n_variables):
-                        ccf_lags = ccf(observations[left], observations[right], unbiased=False)
-                        ccf_variable_pairs[(left, right)] = ccf_lags
+                    for paired_row in active_rows[i+1:]:
+                        ccf_lags = ccf(observations[active_row], observations[paired_row], unbiased=False)
+                        ccf_variable_pairs[(active_row, paired_row)] = ccf_lags
 
         if len(acf_variables) > 0:
-            weight_name, weight_acf = self.strongest_correlation(acf_variables)
-            viz.bar(X=weight_acf, win='autocorr', opts=dict(
+            acf_mean = np.mean(list(acf_variables.values()), axis=0)
+            viz.bar(X=acf_mean, win='autocorr', opts=dict(
                 xlabel='Lag',
                 ylabel='ACF',
-                title=f'Autocorrelation of {weight_name}'
+                title=f'mean Autocorrelation'
             ))
 
         if len(ccf_variable_pairs) > 0:
             shortest_length = min(map(len, ccf_variable_pairs.values()))
             for key, values in ccf_variable_pairs.items():
                 ccf_variable_pairs[key] = values[: shortest_length]
-            pair_ids, pair_ccf = self.strongest_correlation(ccf_variable_pairs)
-            viz.bar(X=pair_ccf, win='crosscorr', opts=dict(
+            ccf_mean = np.mean(list(ccf_variable_pairs.values()), axis=0)
+            viz.bar(X=ccf_mean, win='crosscorr', opts=dict(
                 xlabel='Lag',
                 ylabel='CCF',
                 ytickmin=0.,
                 ytickmax=1.,
-                title=f'Cross-Correlation of weights {pair_ids}'
+                title=f'mean Cross-Correlation'
             ))

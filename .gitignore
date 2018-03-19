@@ -15,3 +15,7 @@ models_bin/
 
 # ignored files
 ignored/
+
+# nuitka cpp
+*.build/
+*.exe

@@ -63,7 +63,7 @@ class Trainer(ABC):
     def _epoch_finished(self, epoch, outputs, labels):
         pass
 
-    def train(self, n_epoch=10, save=True, with_mutual_info=False, epoch_update_step=3):
+    def train(self, n_epoch=10, save=True, with_mutual_info=False, epoch_update_step=1):
         """
         :param n_epoch: number of training epochs
         :param save: save the trained model?
@@ -90,10 +90,10 @@ class Trainer(ABC):
         if with_mutual_info:
             global get_outputs
             get_outputs = self.monitor.mutual_info.decorate_evaluation(get_outputs)
-            self.monitor.mutual_info.capture_input_output(eval_loader)
+            self.monitor.mutual_info.prepare(eval_loader)
 
         for epoch in range(n_epoch):
-            outputs, loss = None, None
+            labels, outputs, loss = None, None, None
             for images, labels in tqdm(self.train_loader,
                                        desc="Epoch {:d}/{:d}".format(epoch, n_epoch),
                                        leave=False):
@@ -108,15 +108,15 @@ class Trainer(ABC):
 
             if epoch % epoch_update_step == 0:
                 self.monitor.update_loss(loss=loss.data[0], mode='batch')
+                self.monitor.update_accuracy(argmax_accuracy(outputs, labels), mode='batch')
                 outputs_full, labels_full = get_outputs(self.model, eval_loader)
                 accuracy = argmax_accuracy(outputs_full, labels_full)
-                is_best = accuracy > best_accuracy
                 self.monitor.update_accuracy(accuracy, mode='full dataset')
-                if is_best:
+                if accuracy > best_accuracy:
                     if save:
                         self.save_model(accuracy)
                     best_accuracy = accuracy
                     self.monitor.log(f"Epoch {epoch}. Best train accuracy so far: {best_accuracy:.4f}")
 
-                self._epoch_finished(epoch, outputs_full, labels_full)
                 self.monitor.epoch_finished()
+                self._epoch_finished(epoch, outputs_full, labels_full)

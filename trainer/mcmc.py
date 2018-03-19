@@ -123,13 +123,13 @@ class TrainerMCMC(Trainer):
         proba_draw = random.random()
         if proba_draw < mcmc_proba_accept:
             self.accepted_count += 1
-            self.monitor.mcmc_step(param_flips)
         else:
             # reject
             for pflip in param_flips:
                 pflip.restore()
             outputs = outputs_orig
             loss = loss_orig
+        self.monitor.mcmc_step(param_flips)
 
         del param_flips
 
@@ -143,9 +143,9 @@ class TrainerMCMC(Trainer):
         ])
 
     def reset(self):
-        # self.accepted_count = 0
-        # self.update_calls = 0
-        # self.loss_delta_mean = 0
+        self.accepted_count = 0
+        self.update_calls = 0
+        self.loss_delta_mean = 0
         self.num_bad_epochs = 0
 
     def _epoch_finished(self, epoch, outputs, labels):
@@ -171,11 +171,11 @@ class TrainerMCMC(Trainer):
             ylabel='Sign flip ratio, %',
             title='MCMC flipped / total_neurons per layer'
         ))
-        self.monitor.register_func(lambda: self.loss_delta_mean, opts=dict(
-            xlabel='Epoch',
-            ylabel='|ΔL|',
-            title='MCMC |Loss(flipped) - Loss(origin)|'
-        ))
+        # self.monitor.register_func(lambda: self.loss_delta_mean, opts=dict(
+        #     xlabel='Epoch',
+        #     ylabel='|ΔL|',
+        #     title='MCMC |Loss(flipped) - Loss(origin)|'
+        # ))
 
 
 class TrainerMCMCTree(TrainerMCMC):
