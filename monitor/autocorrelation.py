@@ -6,10 +6,10 @@ import torch
 import visdom
 from statsmodels.tsa.stattools import acf, ccf
 
-from monitor.batch_timer import BatchTimer, Schedulable
+from monitor.batch_timer import Schedule
 
 
-class Autocorrelation(Schedulable):
+class Autocorrelation(object):
     def __init__(self, n_lags: int = 40, with_autocorrelation=True, with_cross_correlation=False):
         """
         Auto- & cross-correlation for the flipped weight connections that have been chosen by the TrainerMCMC.
@@ -30,14 +30,7 @@ class Autocorrelation(Schedulable):
             for pflip in param_flips:
                 self.samples[pflip.name].append(pflip.param.data.cpu().view(-1))
 
-    def schedule(self, timer: BatchTimer, epoch_update: int = 1, batch_update: int = 0):
-        """
-        :param timer: timer to schedule updates
-        :param epoch_update: epochs between updates
-        :param batch_update: batches between updates (additional to epochs)
-        """
-        self.plot = timer.schedule(self.plot, epoch_update=epoch_update, batch_update=batch_update)
-
+    @Schedule(epoch_update=10)
     def plot(self, viz: visdom.Visdom):
 
         def strongest_correlation(coef_vars_lags: dict):

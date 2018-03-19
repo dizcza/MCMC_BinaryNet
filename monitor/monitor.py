@@ -6,9 +6,9 @@ import torch.nn as nn
 import torch.utils.data
 
 from monitor.autocorrelation import Autocorrelation
-from monitor.batch_timer import BatchTimer
+from monitor.batch_timer import timer
 from monitor.graph import GraphMCMC
-from monitor.mutual_info.mutual_info import MutualInfoKMeans
+from monitor.mutual_info.mutual_info import MutualInfoKMeans, MutualInfoSign, MutualInfoKNN
 from monitor.var_online import VarianceOnline
 from monitor.viz import VisdomMighty
 from utils import named_parameters_binary, parameters_binary, MNISTSmall
@@ -79,14 +79,14 @@ class Monitor(object):
         """
         :param trainer: Trainer instance
         """
-        self.timer = BatchTimer(batches_in_epoch=len(trainer.train_loader))
+        self.timer = timer
+        self.timer.init(batches_in_epoch=len(trainer.train_loader))
         self.viz = VisdomMighty(env=f"{trainer.dataset_name} "
                                     f"{trainer.__class__.__name__} "
                                     f"{time.strftime('%b-%d %H:%M')}", timer=self.timer)
         self.model = trainer.model
         self.params = ParamList()
-        self.mutual_info = MutualInfoKMeans(self.viz, estimate_size=int(1e4), debug=False)
-        self.mutual_info.schedule(self.timer, epoch_update=0, batch_update=2)
+        self.mutual_info = MutualInfoKMeans(estimate_size=int(1e3), compression_range=(0.5, 0.999))
         self.functions = []
         self.log_model(self.model)
         self.log_binary_ratio()
@@ -119,7 +119,9 @@ class Monitor(object):
     def batch_finished(self):
         self.params.batch_finished()
         self.timer.tick()
-        self.mutual_info.update(self.model)
+        if self.timer.epoch == 0:
+            self.mutual_info.update(self.model)
+            self.mutual_info.plot(self.viz)
 
     def update_loss(self, loss: float, mode='batch'):
         self.viz.line_update(loss, win=f'loss', opts=dict(
@@ -174,12 +176,13 @@ class Monitor(object):
             ))
 
     def update_timings(self):
-        self.viz.text(f'Batch duration: {self.timer.batch_duration(): .2e} ms', win='status')
-        self.viz.text(f'Epoch duration: {self.timer.epoch_duration(): .2e} ms', win='status', append=True)
+        self.viz.text(f'Batch duration: {self.timer.batch_duration(): .2e} sec', win='status')
+        self.viz.text(f'Epoch duration: {self.timer.epoch_duration(): .2e} sec', win='status', append=True)
+        self.viz.text(f'Training time: {self.timer.training_time()}', win='status', append=True)
 
     def epoch_finished(self):
         self.update_timings()
-        self.mutual_info.plot()
+        self.mutual_info.plot(self.viz)
         self.params.plot_sign_flips(self.viz)
         for func_id, (func, opts) in enumerate(self.functions):
             self.viz.line_update(y=func(), win=f"func_{func_id}", opts=opts)
@@ -199,10 +202,8 @@ class MonitorMCMC(Monitor):
         self.autocorrelation = Autocorrelation(n_lags=self.timer.batches_in_epoch,
                                                with_autocorrelation=isinstance(trainer.train_loader.dataset,
                                                                                MNISTSmall))
-        self.autocorrelation.schedule(self.timer, epoch_update=10)
         self.graph_mcmc = GraphMCMC(named_params=named_parameters_binary(self.model), timer=self.timer,
                                     history_heatmap=True)
-        self.graph_mcmc.schedule(self.timer, epoch_update=1)
 
     def mcmc_step(self, param_flips):
         self.autocorrelation.add_samples(param_flips)

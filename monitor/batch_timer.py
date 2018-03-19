@@ -1,34 +1,23 @@
+import datetime
 import time
-from abc import ABC, abstractmethod
+import warnings
 from collections import defaultdict
 from typing import Callable
 
 
 class BatchTimer(object):
 
-    def __init__(self, batches_in_epoch: int):
-        self.batches_in_epoch = batches_in_epoch
+    def __init__(self):
+        self.batches_in_epoch = 1  # will be set next
         self.batch_id = 0
         self.batch_time = defaultdict(lambda: time.time())
+        self.start_training_time = time.time()
+        self.checkpoints = []
 
-    def schedule(self, func: Callable, epoch_update: int = 1, batch_update: int = 0):
-        """
-        :param func: monitored function with void return
-        :param epoch_update: +epochs between updates
-        :param batch_update: +batches between updates with fixed epoch
-        :return: decorated `func`
-        """
-        batch_update = epoch_update * self.batches_in_epoch + batch_update
-        assert batch_update > 0, "At least 1 batch step"
-        next_batch = batch_update
-
-        def wrapped(*args, **kwargs):
-            nonlocal next_batch
-            if self.batch_id >= next_batch:
-                func(*args, **kwargs)
-                next_batch += batch_update
-
-        return wrapped
+    def init(self, batches_in_epoch: int):
+        self.batches_in_epoch = batches_in_epoch
+        for checkpoint in self.checkpoints:
+            checkpoint.init(batches_in_epoch)
 
     @property
     def epoch(self):
@@ -49,14 +38,37 @@ class BatchTimer(object):
     def epoch_duration(self):
         return self.batch_duration() * self.batches_in_epoch
 
+    def training_time(self):
+        return datetime.timedelta(seconds=int(time.time() - self.start_training_time))
 
-class Schedulable(ABC):
 
-    @abstractmethod
-    def schedule(self, timer: BatchTimer, epoch_update: int = 1, batch_update: int = 0):
-        """
-        :param timer: timer to schedule updates
-        :param epoch_update: epochs between updates
-        :param batch_update: batches between updates (additional to epochs)
-        """
-        raise NotImplementedError()
+timer = BatchTimer()
+
+
+class Schedule(object):
+    def __init__(self, epoch_update: int = 1, batch_update: int = 0):
+        self.epoch_update = epoch_update
+        self.batch_update = batch_update
+        self.batch_step = 1
+        self.next_batch = self.batch_step
+        self.initialized = False
+        timer.checkpoints.append(self)
+
+    def init(self, batches_in_epoch: int):
+        self.batch_step = batches_in_epoch * self.epoch_update + self.batch_update
+        self.next_batch = self.batch_step
+        self.initialized = True
+
+    def need_update(self, current_batch) -> bool:
+        if current_batch >= self.next_batch:
+            self.next_batch += self.batch_step
+            return True
+        return False
+
+    def __call__(self, func: Callable):
+        def wrapped(*args, **kwargs):
+            if not self.initialized:
+                warnings.warn("Timer is not initialized!")
+            if self.need_update(timer.batch_id):
+                func(*args, **kwargs)
+        return wrapped

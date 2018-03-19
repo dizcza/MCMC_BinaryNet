@@ -2,6 +2,7 @@ import math
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from typing import Callable, Union, List, Dict
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 import torch
@@ -11,30 +12,28 @@ from sklearn.metrics import mutual_info_score
 from sklearn import cluster
 from torch.autograd import Variable
 
-from monitor.batch_timer import BatchTimer, Schedulable
+from monitor.batch_timer import Schedule
 from monitor.mutual_info.kraskov_knn import get_mi as mutual_info_score_knn
 from monitor.viz import VisdomMighty
 
 
-class MutualInfo(Schedulable):
+class MutualInfo(ABC):
 
     log2e = math.log2(math.e)
 
-    def __init__(self, viz: VisdomMighty, estimate_size: int = np.inf, compression_range=(0.50, 0.999), debug=False):
+    def __init__(self, estimate_size: int = np.inf, compression_range=(0.50, 0.999), debug=False):
         """
-        :param viz: Visdom logger
         :param estimate_size: number of samples to estimate MI from
         :param compression_range: min & max acceptable quantization compression range
         """
-        self.viz = viz
-        self.viz.log(f"MI estimate_size={estimate_size}")
         self.estimate_size = estimate_size
         self.compression_range = compression_range
         self.debug = debug
-        self.n_bins = {}
+        self.n_bins = defaultdict(int)
         self.max_trials_adjust = 10
         self.layers = {}
         self.activations = defaultdict(list)
+        self.quantized = {}
         self.information = {}
         self.is_active = False
         self.eval_loader = None
@@ -42,17 +41,6 @@ class MutualInfo(Schedulable):
     @property
     def n_bins_default(self):
         return 20
-
-    def schedule(self, timer: BatchTimer, epoch_update: int = 1, batch_update: int = 0):
-        """
-        :param timer: timer to schedule updates
-        :param epoch_update: epochs between updates
-        :param batch_update: batches between updates (additional to epochs)
-        """
-        self.start_listening = timer.schedule(self.start_listening, epoch_update=epoch_update,
-                                              batch_update=batch_update)
-        self.update = timer.schedule(self.update, epoch_update=epoch_update, batch_update=batch_update)
-        self.plot_quantized_dispersion = timer.schedule(self.plot_quantized_dispersion, epoch_update=1)
 
     def register(self, layer: nn.Module, name: str):
         self.layers[name] = (layer, layer.forward)  # immutable
@@ -62,6 +50,9 @@ class MutualInfo(Schedulable):
             # did you forget to call .prepare()?
             return
         self.start_listening()
+        if not self.is_active:
+            # not ready yet
+            return
         use_cuda = torch.cuda.is_available()
         for batch_id, (images, labels) in enumerate(iter(self.eval_loader)):
             if use_cuda:
@@ -70,7 +61,6 @@ class MutualInfo(Schedulable):
             if batch_id * self.eval_loader.batch_size >= self.estimate_size:
                 break
         self.finish_listening()
-        self.plot()
 
     def decorate_evaluation(self, func: Callable):
         def wrapped(*args, **kwargs):
@@ -93,6 +83,7 @@ class MutualInfo(Schedulable):
         self.activations['input'] = self.process(layer_name='input', activations=inputs)
         self.activations['target'] = self.process(layer_name='target', activations=targets)
 
+    @Schedule(epoch_update=0, batch_update=5)
     def start_listening(self):
         for name, (layer, forward_orig) in self.layers.items():
             if layer.forward == forward_orig:
@@ -105,7 +96,7 @@ class MutualInfo(Schedulable):
         for name, (layer, forward_orig) in self.layers.items():
             layer.forward = forward_orig
         self.is_active = False
-        self.save_information()
+        self.save_information_async()
 
     def wrap_forward(self, layer_name, forward_orig):
         def forward_and_save(input):
@@ -132,54 +123,78 @@ class MutualInfo(Schedulable):
     def compute_mutual_info(self, x, y) -> float:
         return mutual_info_score(x, y) * self.log2e
 
-    def plot_quantized_hist(self, quantized: Dict[str, np.ndarray]):
-        for name, layer_quantized in quantized.items():
+    def plot_quantized_hist(self, viz: VisdomMighty):
+        for name, layer_quantized in self.quantized.items():
             _, counts = np.unique(layer_quantized, return_counts=True)
             counts.sort()
             counts = counts[::-1]
-            self.viz.bar(Y=np.arange(len(counts), dtype=int), X=counts, win=f'{name} MI hist', opts=dict(
+            viz.bar(Y=np.arange(len(counts), dtype=int), X=counts, win=f'{name} MI hist', opts=dict(
                 xlabel='bin ID',
                 ylabel='# items',
                 title=f'{name} MI quantized histogram',
             ))
 
-    def plot_quantized_dispersion(self, quantized: Dict[str, np.ndarray]):
-        if len(set(self.n_bins[name] for name in quantized.keys())) == 1:
+    @Schedule(epoch_update=1)
+    def plot_quantized_dispersion(self, viz: VisdomMighty):
+        if any(n_bins == 0 for n_bins in self.n_bins.values()):
+            # algorithm doesn't use binning
+            return
+        legend = []
+        for name in self.quantized.keys():
+            legend.append(f'{name} ({self.n_bins[name]} bins)')
+        if len(set(self.n_bins[name] for name in self.quantized.keys())) == 1:
             # all layers have the same n_bins
-            counts = []
-            for name, layer_quantized in quantized.items():
+            n_bins = self.n_bins['input']
+            counts = np.zeros(shape=(len(self.quantized), n_bins), dtype=np.int32)
+            for layer_id, (name, layer_quantized) in enumerate(self.quantized.items()):
                 _, layer_counts = np.unique(layer_quantized, return_counts=True)
-                counts.append(layer_counts)
-            self.viz.boxplot(X=np.vstack(counts).transpose(), win='MI hist', opts=dict(
+                counts[layer_id, :len(layer_counts)] = layer_counts
+            viz.boxplot(X=counts.transpose(), win='MI hist', opts=dict(
                 ylabel='# items in one bin',
                 title='MI quantized dispersion (smaller is better)',
-                legend=list(quantized.keys()),
+                legend=legend,
             ))
         else:
-            self.viz.boxplot(X=np.vstack(quantized.values()).transpose(), win='MI hist', opts=dict(
+            viz.boxplot(X=np.vstack(self.quantized.values()).transpose(), win='MI hist', opts=dict(
                 ylabel='bin ID dispersion',
                 title='MI inverse quantized dispersion (smaller is worse)',
-                legend=list(quantized.keys()),
+                legend=legend,
             ))
         if self.debug:
-            self.plot_quantized_hist(quantized)
+            self.plot_quantized_hist(viz)
+
+    def _compute_async(self, args):
+        name, activations = args
+        quantized = self.process(name, activations)
+        info_x = self.compute_mutual_info(self.activations['input'], quantized)
+        info_y = self.compute_mutual_info(self.activations['target'], quantized)
+        return name, quantized, info_x, info_y, self.n_bins[name]
+
+    def save_information_async(self):
+        self.quantized = dict(input=self.activations['input'])
+        with ProcessPoolExecutor() as executor:
+            args = [(hname, self.activations.pop(hname)) for hname in self.hidden_layer_names()]
+            for (hname, quantized, info_x, info_y, n_bins) in executor.map(self._compute_async, args):
+                self.information[hname] = (info_x, info_y)
+                self.quantized[hname] = quantized
+                self.n_bins[hname] = n_bins
 
     def save_information(self):
-        quantized = dict(input=self.activations['input'])
+        self.quantized = dict(input=self.activations['input'])
         for hname in self.hidden_layer_names():
-            quantized[hname] = self.process(hname, self.activations.pop(hname))
-            info_x = self.compute_mutual_info(self.activations['input'], quantized[hname])
-            info_y = self.compute_mutual_info(self.activations['target'], quantized[hname])
+            self.quantized[hname] = self.process(hname, self.activations.pop(hname))
+            info_x = self.compute_mutual_info(self.activations['input'], self.quantized[hname])
+            info_y = self.compute_mutual_info(self.activations['target'], self.quantized[hname])
             self.information[hname] = (info_x, info_y)
-        self.plot_quantized_dispersion(quantized)
 
-    def plot(self):
+    def plot(self, viz):
         assert not self.is_active, "Wait, not finished yet."
         if len(self.information) == 0:
             return
         legend = []
         ys = []
         xs = []
+        self.plot_quantized_dispersion(viz)
         for layer_name, (info_x, info_y) in list(self.information.items()):
             ys.append(info_y)
             xs.append(info_x)
@@ -189,12 +204,12 @@ class MutualInfo(Schedulable):
         if len(ys) > 1:
             ys = [ys]
             xs = [xs]
-        self.viz.line(Y=np.array(ys), X=np.array(xs), win=title, opts=dict(
+        viz.line(Y=np.array(ys), X=np.array(xs), win=title, opts=dict(
             xlabel='I(X, T), bits',
             ylabel='I(T, Y), bits',
             title=title,
             legend=legend,
-        ), update='append' if self.viz.win_exists(title) else None)
+        ), update='append' if viz.win_exists(title) else None)
 
 
 class MutualInfoBin(MutualInfo):
@@ -208,7 +223,6 @@ class MutualInfoBin(MutualInfo):
             activations = activations.view(activations.shape[0], -1)
             if layer_name not in self.n_bins:
                 self.n_bins[layer_name] = self.adjust_bins(layer_name, activations)
-                self.viz.log(f"[{self.__class__.__name__}] {layer_name}: set n_bins={self.n_bins[layer_name]}")
             activations = self.quantize(layer_name, activations, n_bins=self.n_bins[layer_name])
         return activations
 
@@ -273,32 +287,29 @@ class MutualInfoQuantile(MutualInfoBin):
 
 class MutualInfoKMeans(MutualInfoBin):
 
-    def __init__(self, viz: VisdomMighty, estimate_size: int = np.inf, compression_range=(0.50, 0.999), debug=False,
-                 patience: int = 2):
-        """
-        :param viz: Visdom logger
-        :param estimate_size: number of samples to estimate MI from
-        :param compression_range: min & max acceptable quantization compression range
-        :param patience: reuse previously fit model for n='patience' iterations
-        """
-        super().__init__(viz, estimate_size, compression_range, debug)
-        self.model = {}
-        self.count_iterations = defaultdict(int)
-        self.patience = patience
-
     def digitize(self, layer_name: str, activations: torch.FloatTensor, n_bins: int) -> np.ndarray:
-        if layer_name not in self.model or self.model[layer_name].n_clusters != n_bins:
-            self.model[layer_name] = cluster.MiniBatchKMeans(n_clusters=n_bins)
-            labels = self.model[layer_name].fit_predict(activations)
-        else:
-            labels = self.model[layer_name].predict(activations)
+        model = cluster.MiniBatchKMeans(n_clusters=n_bins)
+        labels = model.fit_predict(activations)
         return labels
 
     def quantize(self, layer_name: str, activations: torch.FloatTensor, n_bins: int) -> np.ndarray:
-        self.count_iterations[layer_name] += 1
-        if self.count_iterations[layer_name] % self.patience == 0:
-            del self.model[layer_name]
         return self.digitize(layer_name, activations, n_bins=n_bins)
+
+
+class MutualInfoSign(MutualInfo):
+
+    def process(self, layer_name: str, activations: List[torch.FloatTensor]) -> np.ndarray:
+        activations = super().process(layer_name, activations)
+        if layer_name == 'target':
+            assert isinstance(activations, (torch.LongTensor, torch.IntTensor))
+            activations = activations.numpy()
+        else:
+            activations = activations.view(activations.shape[0], -1)
+            activations.sign_()
+            unique, inverse = np.unique(activations.numpy(), return_inverse=True, axis=0)
+            self.n_bins[layer_name] = len(unique)
+            activations = inverse
+        return activations
 
 
 class MutualInfoKNN(MutualInfo):

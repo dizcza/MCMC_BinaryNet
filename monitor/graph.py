@@ -9,7 +9,7 @@ import torch
 import visdom
 import math
 
-from monitor.batch_timer import BatchTimer, Schedulable
+from monitor.batch_timer import Schedule, BatchTimer
 
 
 class ParameterNode(object):
@@ -33,7 +33,7 @@ class ParameterNode(object):
         self.sink_active = list(new_sink)
 
 
-class GraphMCMC(Schedulable):
+class GraphMCMC(object):
     def __init__(self, named_params: Iterable[Tuple], timer: BatchTimer, history_heatmap=False):
         """
         :param named_params: named binary parameters
@@ -73,6 +73,7 @@ class GraphMCMC(Schedulable):
                 pnode.idx_flipped += pflip.get_idx_flipped().cpu().numpy()
         self.save_sample_activations(param_flips)
 
+    @Schedule(epoch_update=0, batch_update=1)
     def save_sample_activations(self, param_flips: Iterable):
         """
         :param param_flips: Iterable of ParameterFLip
@@ -82,10 +83,6 @@ class GraphMCMC(Schedulable):
             pnode.save_activations(new_source=[], new_sink=[])
         for pflip in param_flips:
             self.param_nodes[pflip.name].save_activations(new_source=pflip.source, new_sink=pflip.sink)
-
-    def schedule(self, timer: BatchTimer, epoch_update: int = 1, batch_update: int = 0):
-        self.render = timer.schedule(self.render, epoch_update=epoch_update)
-        self.save_sample_activations = timer.schedule(self.save_sample_activations, epoch_update=1)
 
     @staticmethod
     def neuron_name(layer_name: str, neuron_id: int):
@@ -145,6 +142,7 @@ class GraphMCMC(Schedulable):
         else:
             return {layer_size // 2, layer_size // 2 - 1}
 
+    @Schedule(epoch_update=10)
     def render(self, viz: visdom.Visdom, render_format='svg'):
         if not self.graphviz_installed or len(self.param_nodes) == 0:
             return
