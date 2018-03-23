@@ -19,8 +19,8 @@ class VisdomMighty(visdom.Visdom):
         print(f"Monitor is opened at http://localhost:8097. Choose environment '{self.env}'.")
         self.log(f"Batches in epoch: {timer.batches_in_epoch}")
         self.legends = defaultdict(list)
-        for win in ('loss', 'accuracy'):
-            self.register_plot(win=win, legend=['batch', 'full dataset'])
+        self.register_plot(win='loss', legend=['batch', 'full train'])
+        self.register_plot(win='accuracy', legend=['batch', 'full train', 'full test'])
 
     def register_plot(self, win: str, legend: Iterable[str]):
         legend = list(legend)

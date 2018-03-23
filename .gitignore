@@ -19,3 +19,6 @@ ignored/
 # nuitka cpp
 *.build/
 *.exe
+
+# R data
+*.Rda

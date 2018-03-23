@@ -111,7 +111,7 @@ class Trainer(ABC):
                 self.monitor.update_accuracy(argmax_accuracy(outputs, labels), mode='batch')
                 outputs_full, labels_full = get_outputs(self.model, eval_loader)
                 accuracy = argmax_accuracy(outputs_full, labels_full)
-                self.monitor.update_accuracy(accuracy, mode='full dataset')
+                self.monitor.update_accuracy(accuracy, mode='full train')
                 if accuracy > best_accuracy:
                     if save:
                         self.save_model(accuracy)

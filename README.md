@@ -45,6 +45,6 @@ trainer.train(n_epoch=100)
 
 ## Results
 
-Navigate to [http://ec2-34-227-113-244.compute-1.amazonaws.com:8099](http://ec2-34-227-113-244.compute-1.amazonaws.com:8099) and choose the Environment you want (`main` env is empty).
-
-For your local results, go to [http://localhost:8097](http://localhost:8097)
+* Train plots. Navigate to [http://ec2-34-227-113-244.compute-1.amazonaws.com:8099](http://ec2-34-227-113-244.compute-1.amazonaws.com:8099) and choose the Environment you want (`main` env is empty).
+* For your local results, go to [http://localhost:8097](http://localhost:8097)
+* JAGS simulation in R: [paper](JAGS/paper.pdf), [code](JAGS/mcmc_jags.R)

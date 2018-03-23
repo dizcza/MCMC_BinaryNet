@@ -6,12 +6,13 @@ import torch.nn as nn
 import torch.utils.data
 
 from monitor.autocorrelation import Autocorrelation
-from monitor.batch_timer import timer
+from monitor.batch_timer import timer, Schedule
 from monitor.graph import GraphMCMC
 from monitor.mutual_info.mutual_info import MutualInfoKMeans, MutualInfoSign, MutualInfoKNN
 from monitor.var_online import VarianceOnline
 from monitor.viz import VisdomMighty
-from utils import named_parameters_binary, parameters_binary, MNISTSmall
+from monitor.accuracy import calc_accuracy
+from utils import named_parameters_binary, parameters_binary, MNISTSmall, get_data_loader
 
 
 def timer_profile(func):
@@ -85,8 +86,9 @@ class Monitor(object):
                                     f"{trainer.__class__.__name__} "
                                     f"{time.strftime('%b-%d %H:%M')}", timer=self.timer)
         self.model = trainer.model
+        self.test_loader = get_data_loader(dataset=trainer.dataset_name, train=False)
         self.params = ParamList()
-        self.mutual_info = MutualInfoKMeans(estimate_size=int(1e3), compression_range=(0.5, 0.999))
+        self.mutual_info = MutualInfoKMeans(estimate_size=int(1e5), compression_range=(0.5, 0.999))
         self.functions = []
         self.log_model(self.model)
         self.log_binary_ratio()
@@ -134,8 +136,12 @@ class Monitor(object):
         self.viz.line_update(accuracy, win=f'accuracy', opts=dict(
             xlabel='Epoch',
             ylabel='Loss',
-            title=f'Train accuracy'
+            title=f'Accuracy'
         ), name=mode)
+
+    @Schedule(epoch_update=1)
+    def update_accuracy_test(self):
+        self.update_accuracy(accuracy=calc_accuracy(self.model, self.test_loader), mode='full test')
 
     def register_func(self, func: Callable, opts: dict = None):
         self.functions.append((func, opts))
@@ -182,6 +188,7 @@ class Monitor(object):
 
     def epoch_finished(self):
         self.update_timings()
+        self.update_accuracy_test()
         self.mutual_info.plot(self.viz)
         self.params.plot_sign_flips(self.viz)
         for func_id, (func, opts) in enumerate(self.functions):

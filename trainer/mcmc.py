@@ -150,7 +150,7 @@ class TrainerMCMC(Trainer):
 
     def _epoch_finished(self, epoch, outputs, labels):
         loss = self.criterion(outputs, labels).data[0]
-        self.monitor.update_loss(loss, mode='full dataset')
+        self.monitor.update_loss(loss, mode='full train')
         if loss < self.best_loss:
             self.best_loss = loss
             self.num_bad_epochs = 0
