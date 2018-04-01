@@ -1,5 +1,6 @@
 library(rjags)
 set.seed(26)
+.pardefault <- par(no.readonly = TRUE)
 
 read_mnist56 <- function(path_or_url, shuffle = FALSE, n.take = nrow(data)) {
   data = read.table(path_or_url, sep=',', header=TRUE)
@@ -7,10 +8,7 @@ read_mnist56 <- function(path_or_url, shuffle = FALSE, n.take = nrow(data)) {
     data = data[sample(nrow(data)),]
   }
   x = data.matrix(data[,-ncol(data)])
-  x = scale(x)
-  stopifnot(all(!is.na(x)))
   x[x > 0] = 1
-  x[x <= 0] = 0
   y = data[, ncol(data)]
   if (!is.null(n.take)) {
     n.take = min(n.take, length(x))
@@ -21,7 +19,7 @@ read_mnist56 <- function(path_or_url, shuffle = FALSE, n.take = nrow(data)) {
   return(data_list)
 }
 
-data_train = read_mnist56(url("https://www.dropbox.com/s/l7uppxi1wvfj45z/MNIST56_train.csv?dl=1"), shuffle = TRUE, n.take = 1e3)
+data_train = read_mnist56(url("https://www.dropbox.com/s/l7uppxi1wvfj45z/MNIST56_train.csv?dl=1"), shuffle = TRUE, n.take=500)
 data_test = read_mnist56(url("https://www.dropbox.com/s/399gkdk9bhqvz86/MNIST56_test.csv?dl=1"))
 
 mod_string = "model {
@@ -37,7 +35,7 @@ mod_string = "model {
   }
 }"
 mod = jags.model(textConnection(mod_string), data=data_train, n.chains=3)
-mod_sim = coda.samples(model=mod, variable.names='w', n.iter=500)
+mod_sim = coda.samples(model=mod, variable.names='w', n.iter=200)
 mod_csim = as.mcmc(do.call(rbind, mod_sim))
 
 # plot(mod_sim)
@@ -63,32 +61,56 @@ accuracy_train = calc_accuracy(w, data_train)
 accuracy_test = calc_accuracy(w, data_test)
 cat("MCMC accuracy train = ", accuracy_train, ", test = ", accuracy_test)
 
-plot_convergence <- function(n.step = 10) {
+plot_convergence <- function(n.step = 10, at_epoch=TRUE) {
   chain_colors = c('red', 'green', 'blue')
   for (chain_id in 1:3) {
     draws_chain = mod_sim[[chain_id]]
     draws_chain = draws_chain[, startsWith(colnames(draws_chain), 'w')]
     iteration = seq(from=n.step, to=nrow(mod_sim[[1]]), by=n.step)
     epoch_accuracy_func  <- function(epoch) {
-      w = as.matrix.2x25(draws_chain[epoch,])
+      if (at_epoch || epoch == 1) {
+        w = draws_chain[epoch,]
+      } else if (!at_epoch) {
+        w = colMeans(draws_chain[1:epoch,])
+      }
+      w = as.matrix.2x25(w)
       return(calc_accuracy(w, data_train))
     }
     accuracy = lapply(iteration, epoch_accuracy_func)
     if (chain_id == 1) {
-      plot(iteration, accuracy, type='n', ylim=c(0.5, 1), main='Convergence diagnostic')
+      if (at_epoch) {
+        title = "at epoch"
+      } else {
+        title = "mean(W1,..,Wi)"
+      }
+      title = paste("Convergence diagnostic", title)
+      plot(iteration, accuracy, type='n', ylim=c(0.5, 1), main=title)
     }
     points(jitter(iteration, amount = 0.5), accuracy, col=chain_colors[chain_id])
   }
   legend('bottomright', legend=c('chain 1', 'chain 2', 'chain 3'), col=chain_colors, fill=chain_colors)
 }
-plot_convergence(n.step=2)
+par(mfrow=c(2, 1))
+plot_convergence(n.step=1, at_epoch=TRUE)
+plot_convergence(n.step=1, at_epoch=FALSE)
 
 check_residuals <- function() {
   z = data_train$x %*% t(w)
   py = 1 / (1 + exp(z[,1] -z[,2]))
   resid = data_train$y - py
-  plot(jitter(resid, amount=0.01), main='Residuals y_true - proba_predicted')
-  plot(jitter(py, amount=0.02), jitter(resid, amount=0.02))
+  par(.pardefault)
+  colors.digit = c('blue', 'green')
+  plot(resid, main='Residuals y_true - proba_predicted', col=colors.digit[1], pch=16)
+  points(which(data_train$y == 1), subset(resid, data_train$y == 1), col=colors.digit[2], pch=16)
+  legend('bottomleft', legend=c('digit 5', 'digit 6'), fill=colors.digit)
+  interest_indices = which(abs(resid) > 2*sqrt(var(resid)))
+  points(interest_indices, resid[interest_indices], col='red', cex=2)
+  par(mfrow=c(3, 3))
+  for (index in interest_indices) {
+    im = matrix(data_train$x[index,], nrow=5, ncol=5, byrow=TRUE)
+    im <- t(apply(im, 2, rev))
+    image(1:5, 1:5, im, col=gray(0:1), xlab='', ylab='', axes=FALSE, main=sprintf("[%d]: label %d", index, data_train$y[index]))
+  }
 }
 
 check_residuals()
