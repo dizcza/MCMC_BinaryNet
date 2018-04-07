@@ -82,13 +82,13 @@ class Monitor(object):
         """
         self.timer = timer
         self.timer.init(batches_in_epoch=len(trainer.train_loader))
-        self.viz = VisdomMighty(env=f"{trainer.dataset_name} "
-                                    f"{trainer.__class__.__name__} "
-                                    f"{time.strftime('%b-%d %H:%M')}", timer=self.timer)
+        self.viz = VisdomMighty(env=f"{time.strftime('%Y-%b-%d')} "
+                                    f"{trainer.dataset_name} "
+                                    f"{trainer.__class__.__name__}", timer=self.timer)
         self.model = trainer.model
         self.test_loader = get_data_loader(dataset=trainer.dataset_name, train=False)
         self.params = ParamList()
-        self.mutual_info = MutualInfoKMeans(estimate_size=int(1e5), compression_range=(0.5, 0.999))
+        self.mutual_info = MutualInfoKMeans(estimate_size=int(1e3), compression_range=(0.5, 0.999))
         self.functions = []
         self.log_model(self.model)
         self.log_binary_ratio()
@@ -135,7 +135,7 @@ class Monitor(object):
     def update_accuracy(self, accuracy: float, mode='batch'):
         self.viz.line_update(accuracy, win=f'accuracy', opts=dict(
             xlabel='Epoch',
-            ylabel='Loss',
+            ylabel='Accuracy',
             title=f'Accuracy'
         ), name=mode)
 

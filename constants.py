@@ -1,3 +1,4 @@
 from pathlib import Path
 
-MODELS_DIR = Path(__file__).with_name("models_bin")
+DATA_DIR = Path(__file__).with_name("data")
+MODELS_DIR = DATA_DIR.with_name("models_bin")

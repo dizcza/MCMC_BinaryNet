@@ -1,10 +1,12 @@
 import math
 import random
 from typing import List
+import copy
 
 import torch
 import torch.nn as nn
 import torch.utils.data
+from torch.autograd import Variable
 
 from layers import compile_inference
 from monitor.monitor import MonitorMCMC
@@ -77,10 +79,10 @@ class TrainerMCMC(Trainer):
         self.monitor.log(f"Flip ratio: {flip_ratio}")
         self.accepted_count = 0
         self.update_calls = 0
-        self.loss_delta_mean = 0
         self.patience = 5
         self.num_bad_epochs = 0
         self.best_loss = float('inf')
+        self.best_model_state = self.model.state_dict()
         for param in model.parameters():
             param.requires_grad = False
             param.volatile = True
@@ -95,7 +97,15 @@ class TrainerMCMC(Trainer):
     def sample_neurons(self, size) -> List[int]:
         return random.sample(range(size), k=math.ceil(size * self.flip_ratio))
 
-    def train_batch_mcmc(self, images, labels, named_params):
+    def accept(self, loss_new: Variable, loss_old: Variable) -> float:
+        loss_delta = (loss_new - loss_old).data[0]
+        if loss_delta < 0:
+            proba_accept = 1.0
+        else:
+            proba_accept = math.exp(-loss_delta / (self.flip_ratio * 1))
+        return proba_accept
+
+    def train_batch_mcmc(self, images: Variable, labels: Variable, named_params):
         outputs_orig = self.model(images)
         loss_orig = self.criterion(outputs_orig, labels)
 
@@ -115,13 +125,9 @@ class TrainerMCMC(Trainer):
 
         outputs = self.model(images)
         loss = self.criterion(outputs, labels)
-        loss_delta = (loss - loss_orig).data[0]
-        if loss_delta < 0:
-            mcmc_proba_accept = 1.0
-        else:
-            mcmc_proba_accept = math.exp(-loss_delta / (self.flip_ratio * len(param_flips) ** 2))
+        proba_accept = self.accept(loss_new=loss, loss_old=loss_orig)
         proba_draw = random.random()
-        if proba_draw < mcmc_proba_accept:
+        if proba_draw <= proba_accept:
             self.accepted_count += 1
         else:
             # reject
@@ -134,7 +140,6 @@ class TrainerMCMC(Trainer):
         del param_flips
 
         self.update_calls += 1
-        self.loss_delta_mean += (abs(loss_delta) - self.loss_delta_mean) / self.update_calls
         return outputs, loss
 
     def train_batch(self, images, labels):
@@ -145,8 +150,8 @@ class TrainerMCMC(Trainer):
     def reset(self):
         self.accepted_count = 0
         self.update_calls = 0
-        self.loss_delta_mean = 0
         self.num_bad_epochs = 0
+        self.model.load_state_dict(self.best_model_state)
 
     def _epoch_finished(self, epoch, outputs, labels):
         loss = self.criterion(outputs, labels).data[0]
@@ -154,6 +159,7 @@ class TrainerMCMC(Trainer):
         if loss < self.best_loss:
             self.best_loss = loss
             self.num_bad_epochs = 0
+            self.best_model_state = copy.deepcopy(self.model.state_dict())
         else:
             self.num_bad_epochs += 1
         if self.num_bad_epochs > self.patience:
@@ -171,14 +177,20 @@ class TrainerMCMC(Trainer):
             ylabel='Sign flip ratio, %',
             title='MCMC flipped / total_neurons per layer'
         ))
-        # self.monitor.register_func(lambda: self.loss_delta_mean, opts=dict(
-        #     xlabel='Epoch',
-        #     ylabel='|ΔL|',
-        #     title='MCMC |Loss(flipped) - Loss(origin)|'
-        # ))
 
 
 class TrainerMCMCTree(TrainerMCMC):
 
     def train_batch(self, images, labels):
         return self.train_batch_mcmc(images, labels, named_params=named_parameters_binary(self.model))
+
+
+class TrainerMCMCGibbs(TrainerMCMC):
+    """
+    Probability to find a model in a given state is ~ exp(-loss/kT).
+    """
+
+    def accept(self, loss_new: Variable, loss_old: Variable) -> float:
+        loss_delta = (loss_old - loss_new).data[0]
+        proba_accept = 1 / (1 + math.exp(-loss_delta / (self.flip_ratio * 1)))
+        return proba_accept

@@ -1,4 +1,10 @@
+import matplotlib.pyplot as plt
 import torch
+import torch.utils.data
+from torchvision import transforms, datasets
+from tqdm import tqdm
+
+from constants import DATA_DIR
 
 
 class VarianceOnline(object):
@@ -26,3 +32,48 @@ class VarianceOnline(object):
             return None, None
         else:
             return self.mean.clone(), torch.sqrt(self.var)
+
+
+def dataset_mean_std(dataset_cls: type, batch_size=256):
+    """
+    :param dataset_cls: class type of torch.utils.data.Dataset
+    :param batch_size: batch size
+    :return: samples' mean and std per channel, estimated from a training set
+    """
+    mean_std_file = DATA_DIR / "mean_std" / dataset_cls.__name__
+    mean_std_file = mean_std_file.with_suffix('.pt')
+    if not mean_std_file.exists():
+        dataset = dataset_cls(DATA_DIR, train=True, download=True, transform=transforms.ToTensor())
+        loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+        var_online = VarianceOnline()
+        for images, labels in tqdm(loader, desc=f"{dataset_cls.__name__}: running online mean, std"):
+            for image in images:
+                var_online.update(new_tensor=image)
+        mean, std = var_online.get_mean_std()
+        mean_std_file.parent.mkdir(exist_ok=True, parents=True)
+        with open(mean_std_file, 'wb') as f:
+            torch.save((mean, std), f)
+    with open(mean_std_file, 'rb') as f:
+        mean, std = torch.load(f)
+    return mean, std
+
+
+def visualize_mean_std(dataset_cls=datasets.MNIST):
+    """
+    Plots dataset mean and std, averaged across channels.
+    :param dataset_cls: class type of torch.utils.data.Dataset
+    """
+    mean, std = dataset_mean_std(dataset_cls=dataset_cls)
+    plt.subplot(121)
+    plt.title(f"{dataset_cls.__name__} mean")
+    plt.imshow(mean.mean(dim=0))
+    plt.axis('off')
+    plt.subplot(122)
+    plt.title(f"{dataset_cls.__name__} STD")
+    plt.imshow(std.mean(dim=0))
+    plt.axis('off')
+    plt.show()
+
+
+if __name__ == '__main__':
+    visualize_mean_std(dataset_cls=datasets.MNIST)
