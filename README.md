@@ -8,6 +8,13 @@ This repo shows an alternative optimization of binary neural nets that uses forw
 * [requirements.txt](requirements.txt)
 
 
+## Visualization
+
+![](images/visdom.png)
+
+_A snapshot of training progress of fully connected 784 -> 50 -> 20 -> 10 binary network, trained by TrainerGradBinary on MNIST. Powered by [Visdom](https://github.com/facebookresearch/visdom)._
+
+
 ## Quick start
 
 Before running any experiment, make sure you've started the visdom server:
@@ -47,4 +54,4 @@ trainer.train(n_epoch=100)
 
 * Train plots. Navigate to [http://ec2-34-227-113-244.compute-1.amazonaws.com:8099](http://ec2-34-227-113-244.compute-1.amazonaws.com:8099) and choose the Environment you want (`main` env is empty).
 * For your local results, go to [http://localhost:8097](http://localhost:8097)
-* JAGS simulation in R: [paper](JAGS/paper.pdf), [code](JAGS/mcmc_jags.R)
+* JAGS simulation in _R_: [paper](JAGS/paper.pdf), [code](JAGS/mcmc_jags.R)
