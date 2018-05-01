@@ -156,6 +156,21 @@ class TrainerMCMC(Trainer):
     def _epoch_finished(self, epoch, outputs, labels):
         loss = self.criterion(outputs, labels).data[0]
         self.monitor.update_loss(loss, mode='full train')
+        if (epoch + 1) % 10 == 0:
+            for name, param in named_parameters_binary(self.model):
+                if name in self.monitor.param_data_online:
+                    # continue
+                    mean, std = self.monitor.param_data_online[name].get_mean_std()
+                    inactive = mean.abs() / (std + 1e-7) < 0.5
+                    # mean = mean.sign()
+                    # mean[inactive] = 0
+                    # param.data = mean
+                    self.monitor.viz.text(f'{name}: {inactive.sum()} / {inactive.numel()} are turned off', win='status2')
+                    param.data[inactive] = 0
+                    self.monitor.param_data_online[name].mean[inactive] = 0
+                    self.monitor.param_data_online[name].var[inactive] = 0
+                    # if inactive.any():
+                    #     self.monitor.param_data_online[name].reset()
         if loss < self.best_loss:
             self.best_loss = loss
             self.num_bad_epochs = 0
@@ -192,5 +207,8 @@ class TrainerMCMCGibbs(TrainerMCMC):
 
     def accept(self, loss_new: Variable, loss_old: Variable) -> float:
         loss_delta = (loss_old - loss_new).data[0]
-        proba_accept = 1 / (1 + math.exp(-loss_delta / (self.flip_ratio * 1)))
+        try:
+            proba_accept = 1 / (1 + math.exp(-loss_delta / (self.flip_ratio * 0.1)))
+        except OverflowError:
+            proba_accept = int(loss_delta > 0)
         return proba_accept

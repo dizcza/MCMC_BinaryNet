@@ -105,6 +105,8 @@ class Trainer(ABC):
 
                 outputs, loss = self.train_batch(images, labels)
                 self.monitor.batch_finished()
+                # self.monitor.update_loss(loss=loss.data[0], mode='batch')
+                # self.monitor.update_accuracy(argmax_accuracy(outputs, labels), mode='batch')
 
             if epoch % epoch_update_step == 0:
                 self.monitor.update_loss(loss=loss.data[0], mode='batch')

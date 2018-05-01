@@ -4,6 +4,7 @@ from typing import Callable
 import torch
 import torch.nn as nn
 import torch.utils.data
+import scipy.stats
 
 from monitor.autocorrelation import Autocorrelation
 from monitor.batch_timer import timer, Schedule
@@ -88,7 +89,13 @@ class Monitor(object):
         self.model = trainer.model
         self.test_loader = get_data_loader(dataset=trainer.dataset_name, train=False)
         self.params = ParamList()
-        self.mutual_info = MutualInfoKMeans(estimate_size=int(1e3), compression_range=(0.5, 0.999))
+        self.mutual_info = MutualInfoKMeans(estimate_size=int(1e4), compression_range=(0.5, 0.999))
+
+        # remove if memory consumption is concerned
+        self.param_data_online = {
+            name: VarianceOnline(tensor=param.data) for name, param in named_parameters_binary(self.model)
+        }
+
         self.functions = []
         self.log_model(self.model)
         self.log_binary_ratio()
@@ -194,12 +201,41 @@ class Monitor(object):
         for func_id, (func, opts) in enumerate(self.functions):
             self.viz.line_update(y=func(), win=f"func_{func_id}", opts=opts)
         self.update_gradient_mean_std()
+        self.update_heatmap_online()
         # self.update_distribution()
 
     def register_layer(self, layer: nn.Module, prefix: str):
         self.mutual_info.register(layer, name=prefix)
         for name, param in layer.named_parameters(prefix=prefix):
             self.params.append(ParamRecord(name, param))
+
+    def update_heatmap_online(self):
+        def heatmap(X, win, **opts_kwargs):
+            self.viz.heatmap(X=X, win=win, opts=dict(
+                colormap='Jet',
+                title=win,
+                xlabel='input dimension',
+                ylabel='output dimension',
+                ytickstep=1,
+                **opts_kwargs
+            ))
+
+        for name, var_online in self.param_data_online.items():
+            mean, std = var_online.get_mean_std()
+            heatmap(X=mean, win=f'Heatmap {name} Mean')
+            # heatmap(X=std, win=f'Heatmap {name} STD')
+            # heatmap(X=std / mean.abs(), win=f'Heatmap {name} Coef of variation')
+            isnan = std == 0
+            if not isnan.all():
+                tstat = mean.abs() / std
+                tstat[isnan] = tstat[~isnan].max()
+                heatmap(X=tstat, win=f'Heatmap {name} t-statistics')
+            # p = 1 - scipy.stats.norm.cdf(0, loc=mean.abs(), scale=std)
+            # heatmap(X=p, win=f'Heatmap {name} P(abs(w) > 0)')
+            if mean.shape[0] == 2:
+                # binary classifier
+                diff = mean[1, ] - mean[0, ]
+                # heatmap(X=diff.view(1, -1), win=f'Heatmap {name} W[1,] - W[0,]', ytick=False)
 
 
 class MonitorMCMC(Monitor):
@@ -215,8 +251,10 @@ class MonitorMCMC(Monitor):
     def mcmc_step(self, param_flips):
         self.autocorrelation.add_samples(param_flips)
         self.graph_mcmc.add_samples(param_flips)
+        for pflip in param_flips:
+            self.param_data_online[pflip.name].update(pflip.param.data)
 
     def epoch_finished(self):
         super().epoch_finished()
-        self.autocorrelation.plot(self.viz)
-        self.graph_mcmc.render(self.viz)
+        # self.autocorrelation.plot(self.viz)
+        # self.graph_mcmc.render(self.viz)

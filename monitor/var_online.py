@@ -13,10 +13,12 @@ class VarianceOnline(object):
     Online updating sample mean and unbiased variance in a single pass.
     """
 
-    def __init__(self):
+    def __init__(self, tensor: torch.FloatTensor = None):
         self.mean = None
         self.var = None
         self.count = 0
+        if tensor is not None:
+            self.update(new_tensor=tensor)
 
     def update(self, new_tensor: torch.FloatTensor):
         self.count += 1
@@ -32,6 +34,11 @@ class VarianceOnline(object):
             return None, None
         else:
             return self.mean.clone(), torch.sqrt(self.var)
+
+    def reset(self):
+        self.mean = None
+        self.var = None
+        self.count = 0
 
 
 def dataset_mean_std(dataset_cls: type, batch_size=256):
