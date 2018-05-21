@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.modules.conv
-import torch.nn.functional as F
 import torch.utils.data
 
 
@@ -38,9 +37,11 @@ def compile_inference(model: nn.Module):
 class BinaryFunc(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, input):
-        ctx.save_for_backward(input)
-        return input.sign()
+    def forward(ctx, tensor):
+        ctx.save_for_backward(tensor)
+        tensor = tensor > 0
+        tensor = 2 * tensor.type(torch.FloatTensor) - 1
+        return tensor
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -70,16 +71,18 @@ class BinaryDecorator(nn.Module):
         self.is_inference = True
 
     def forward(self, x):
-        x_mean = torch.mean(torch.abs(x))
+        assert x.ndimension() == 2, "For now, only nn.Linear is supported"
+        x_mean = x.abs().mean(dim=1).view(-1, 1)
         x = BinaryFunc.apply(x)
         if self.is_inference:
             x = self.layer(x)
         else:
             weight_full = self.layer.weight.data.clone()
+            x_mean *= weight_full.abs().mean()
             self.layer.weight.data.sign_()
             x = self.layer(x)
             self.layer.weight.data = weight_full
-        x = F.mul(x, x_mean)
+        x = x_mean * x
         return x
 
     def __repr__(self):
@@ -96,7 +99,7 @@ class ScaleLayer(nn.Module):
         self.scale = nn.Parameter(torch.FloatTensor(size).fill_(init_value))
 
     def forward(self, x):
-        return F.mul(x, self.scale)
+        return self.scale * x
 
     def __repr__(self):
         return self.__class__.__name__ + f"(size={self.scale.numel()})"
