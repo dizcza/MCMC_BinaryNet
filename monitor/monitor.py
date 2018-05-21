@@ -1,5 +1,6 @@
 import time
 from typing import Callable
+from collections import UserDict
 
 import torch
 import torch.nn as nn
@@ -30,8 +31,7 @@ def timer_profile(func):
 
 
 class ParamRecord(object):
-    def __init__(self, name: str, param: nn.Parameter):
-        self.name = name
+    def __init__(self, param: nn.Parameter):
         self.param = param
         self.variance = VarianceOnline(tensor=param.data.cpu())
         self.grad_variance = VarianceOnline()
@@ -39,7 +39,7 @@ class ParamRecord(object):
         self.active = torch.ByteTensor(param.shape).fill_(1)
 
 
-class ParamList(list):
+class ParamsDict(UserDict):
     def __init__(self):
         super().__init__()
         self.sign_flips = 0
@@ -48,7 +48,7 @@ class ParamList(list):
     # todo move auto- & cross-correlation here
     def batch_finished(self):
         self.n_updates += 1
-        for param_record in self:
+        for param_record in self.values():
             param = param_record.param
             new_data = param.data.cpu()
             if new_data is param.data:
@@ -61,7 +61,7 @@ class ParamList(list):
             # haven't registered any param yet
             return
         param_count = 0
-        for param_record in self:
+        for param_record in self.values():
             param_count += torch.numel(param_record.param)
         flips = self.sign_flips
         flips /= param_count  # per param
@@ -90,7 +90,7 @@ class Monitor(object):
                                     f"{trainer.__class__.__name__}", timer=self.timer)
         self.model = trainer.model
         self.test_loader = get_data_loader(dataset=trainer.dataset_name, train=False)
-        self.params = ParamList()
+        self.param_records = ParamsDict()
         self.mutual_info = MutualInfoKMeans(estimate_size=int(1e3), compression_range=(0.5, 0.999))
         self.functions = []
         self.log_model(self.model)
@@ -122,7 +122,7 @@ class Monitor(object):
         self.viz.log(text)
 
     def batch_finished(self):
-        self.params.batch_finished()
+        self.param_records.batch_finished()
         self.timer.tick()
         if self.timer.epoch == 0:
             self.mutual_info.update(self.model)
@@ -150,8 +150,8 @@ class Monitor(object):
         self.functions.append((func, opts))
 
     def update_distribution(self):
-        for param_record in self.params:
-            name, param = param_record.name, param_record.param
+        for name, param_record in self.param_records.items():
+            param = param_record.param
             if param.numel() == 1:
                 self.viz.line_update(y=param.data[0], win=name, opts=dict(
                     xlabel='Epoch',
@@ -166,8 +166,8 @@ class Monitor(object):
                 ))
 
     def update_gradient_mean_std(self):
-        for param_record in self.params:
-            name, param = param_record.name, param_record.param
+        for name, param_record in self.param_records.items():
+            param = param_record.param
             if param.grad is None:
                 continue
             param_record.grad_variance.update(param.grad.data.cpu())
@@ -193,7 +193,7 @@ class Monitor(object):
         self.update_timings()
         self.update_accuracy_test()
         self.mutual_info.plot(self.viz)
-        self.params.plot_sign_flips(self.viz)
+        self.param_records.plot_sign_flips(self.viz)
         for func_id, (func, opts) in enumerate(self.functions):
             self.viz.line_update(y=func(), win=f"func_{func_id}", opts=opts)
         self.update_gradient_mean_std()
@@ -203,7 +203,7 @@ class Monitor(object):
     def register_layer(self, layer: nn.Module, prefix: str):
         self.mutual_info.register(layer, name=prefix)
         for name, param in layer.named_parameters(prefix=prefix):
-            self.params.append(ParamRecord(name, param))
+            self.param_records[name] = ParamRecord(param)
 
     def update_heatmap_history(self):
         def heatmap(X, win, **opts_kwargs):
@@ -222,8 +222,7 @@ class Monitor(object):
                 x_dim = x_dim.view(size, size)
                 heatmap(x_dim, win=f'{win}: dim {dim}', **opts_kwargs)
 
-        for param_record in self.params:
-            name = param_record.name
+        for name, param_record in self.param_records.items():
             mean, std = param_record.variance.get_mean_std()
             heatmap_by_dim(X=mean, win=f'Heatmap {name} Mean')
             # heatmap(X=std, win=f'Heatmap {name} STD')
@@ -249,9 +248,7 @@ class MonitorMCMC(Monitor):
         self.autocorrelation.add_samples(param_flips)
         self.graph_mcmc.add_samples(param_flips)
         for pflip in param_flips:
-            for precord in self.params:
-                if precord.name == pflip.name:
-                    precord.variance.update(pflip.param.data.cpu())
+            self.param_records[pflip.name].variance.update(pflip.param.data.cpu())
 
     def epoch_finished(self):
         super().epoch_finished()
