@@ -34,6 +34,9 @@ class ParameterNode(object):
 
 
 class GraphMCMC(object):
+
+    node_width = 0.2
+
     def __init__(self, named_params: Iterable[Tuple], timer: BatchTimer, history_heatmap=False):
         """
         :param named_params: named binary parameters
@@ -44,8 +47,8 @@ class GraphMCMC(object):
         self.with_history_heatmap = history_heatmap
         self.timer = timer
         self.graph = graphviz.Graph(name='graph_mcmc', directory='graphs', format='png',
-                                    graph_attr=dict(rankdir='LR', color='white', splines='line', nodesep='0.05'),
-                                    node_attr=dict(label='', shape='circle', width='0.2'),
+                                    graph_attr=dict(rankdir='LR', color='white', splines='line', nodesep='0.04'),
+                                    node_attr=dict(label='', shape='circle'),
                                     edge_attr=dict(constraint='false'))
         try:
             self.graph.pipe(format='svg')
@@ -88,24 +91,26 @@ class GraphMCMC(object):
     def neuron_name(layer_name: str, neuron_id: int):
         return f'{layer_name}_{neuron_id}'
 
-    def draw_layer(self, layer_name: str, layer_size: int):
+    def draw_layer(self, layer_name: str, layer_size: int, scale=1.):
         with self.graph.subgraph(name=f'cluster_{layer_name}') as c:
             c.attr(label=layer_name)
+            width = str(self.node_width * scale)
             for neuron_id in range(layer_size):
-                c.node(self.neuron_name(layer_name, neuron_id))
+                c.node(self.neuron_name(layer_name, neuron_id), width=width)
 
     def draw_model(self):
         for pnode in self.param_nodes.values():
             size_output, size_input = pnode.shape
             if pnode.source_name == "input":
-                self.draw_layer(layer_name='input', layer_size=size_input)
+                scale = math.sqrt(size_output / size_input) / 2
+                self.draw_layer(layer_name='input', layer_size=size_input, scale=scale)
             self.draw_layer(layer_name=pnode.sink_name, layer_size=size_output)
             self.draw_edges(source_name=pnode.source_name, source_neurons=self.central_neurons(size_input),
                             sink_name=pnode.sink_name, sink_neurons=self.central_neurons(size_output),
                             constraint='true', style='invis')
             self.draw_edges(source_name=pnode.source_name, source_neurons=pnode.source_active,
                             sink_name=pnode.sink_name, sink_neurons=pnode.sink_active,
-                            penwidth='2.0')
+                            penwidth='1.0')
         if self.with_history_heatmap:
             self.draw_history_heatmap()
         self.graph.node(name='epoch', label=f'MCMC draws. Epoch {self.timer.epoch}', color='white', shape='rect',
