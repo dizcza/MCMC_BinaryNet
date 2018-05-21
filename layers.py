@@ -71,18 +71,14 @@ class BinaryDecorator(nn.Module):
         self.is_inference = True
 
     def forward(self, x):
-        assert x.ndimension() == 2, "For now, only nn.Linear is supported"
-        x_mean = x.abs().mean(dim=1).view(-1, 1)
         x = BinaryFunc.apply(x)
         if self.is_inference:
             x = self.layer(x)
         else:
             weight_full = self.layer.weight.data.clone()
-            x_mean *= weight_full.abs().mean()
             self.layer.weight.data.sign_()
             x = self.layer(x)
             self.layer.weight.data = weight_full
-        x = x_mean * x
         return x
 
     def __repr__(self):
