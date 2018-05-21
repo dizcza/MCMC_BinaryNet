@@ -4,6 +4,7 @@ from typing import Callable
 import torch
 import torch.nn as nn
 import torch.utils.data
+import math
 
 from monitor.autocorrelation import Autocorrelation
 from monitor.batch_timer import timer, Schedule
@@ -32,8 +33,10 @@ class ParamRecord(object):
     def __init__(self, name: str, param: nn.Parameter):
         self.name = name
         self.param = param
-        self.variance = VarianceOnline()
+        self.variance = VarianceOnline(tensor=param.data.cpu())
+        self.grad_variance = VarianceOnline()
         self.prev_sign = param.data.cpu().clone()  # clone is faster
+        self.active = torch.ByteTensor(param.shape).fill_(1)
 
 
 class ParamList(list):
@@ -167,8 +170,8 @@ class Monitor(object):
             name, param = param_record.name, param_record.param
             if param.grad is None:
                 continue
-            param_record.variance.update(param.grad.data.cpu())
-            mean, std = param_record.variance.get_mean_std()
+            param_record.grad_variance.update(param.grad.data.cpu())
+            mean, std = param_record.grad_variance.get_mean_std()
             param_norm = param.data.norm(p=2)
             mean = mean.norm(p=2) / param_norm
             std = std.mean() / param_norm
@@ -194,12 +197,42 @@ class Monitor(object):
         for func_id, (func, opts) in enumerate(self.functions):
             self.viz.line_update(y=func(), win=f"func_{func_id}", opts=opts)
         self.update_gradient_mean_std()
+        self.update_heatmap_history()
         # self.update_distribution()
 
     def register_layer(self, layer: nn.Module, prefix: str):
         self.mutual_info.register(layer, name=prefix)
         for name, param in layer.named_parameters(prefix=prefix):
             self.params.append(ParamRecord(name, param))
+
+    def update_heatmap_history(self):
+        def heatmap(X, win, **opts_kwargs):
+            self.viz.heatmap(X=X, win=win, opts=dict(
+                colormap='Jet',
+                title=win,
+                xlabel='input dimension',
+                ylabel='output dimension',
+                ytickstep=1,
+                **opts_kwargs
+            ))
+
+        def heatmap_by_dim(X, win, **opts_kwargs):
+            for dim, x_dim in enumerate(X):
+                size = math.ceil(math.sqrt(x_dim.shape[0]))
+                x_dim = x_dim.view(size, size)
+                heatmap(x_dim, win=f'{win}: dim {dim}', **opts_kwargs)
+
+        for param_record in self.params:
+            name = param_record.name
+            mean, std = param_record.variance.get_mean_std()
+            heatmap_by_dim(X=mean, win=f'Heatmap {name} Mean')
+            # heatmap(X=std, win=f'Heatmap {name} STD')
+            # heatmap(X=std / mean.abs(), win=f'Heatmap {name} Coef of variation')
+            isnan = std == 0
+            if not isnan.all():
+                tstat = mean.abs() / std
+                tstat[isnan] = tstat[~isnan].max()
+                heatmap_by_dim(X=tstat, win=f'Heatmap {name} t-statistics')
 
 
 class MonitorMCMC(Monitor):
@@ -215,8 +248,12 @@ class MonitorMCMC(Monitor):
     def mcmc_step(self, param_flips):
         self.autocorrelation.add_samples(param_flips)
         self.graph_mcmc.add_samples(param_flips)
+        for pflip in param_flips:
+            for precord in self.params:
+                if precord.name == pflip.name:
+                    precord.variance.update(pflip.param.data.cpu())
 
     def epoch_finished(self):
         super().epoch_finished()
-        self.autocorrelation.plot(self.viz)
-        self.graph_mcmc.render(self.viz)
+        # self.autocorrelation.plot(self.viz)
+        # self.graph_mcmc.render(self.viz)

@@ -156,6 +156,18 @@ class TrainerMCMC(Trainer):
     def _epoch_finished(self, epoch, outputs, labels):
         loss = self.criterion(outputs, labels).data[0]
         self.monitor.update_loss(loss, mode='full train')
+        if (epoch + 1) % 10 == 0:
+            for precord in self.monitor.params:
+                name, param = precord.name, precord.param
+                mean, std = precord.variance.get_mean_std()
+                inactive = mean.abs() / (std + 1e-7) < 0.5
+                # mean = mean.sign()
+                # mean[inactive] = 0
+                # param.data = mean
+                self.monitor.viz.text(f'{name}: {inactive.sum()} / {inactive.numel()} are turned off', win='status2')
+                param.data[inactive] = 0
+                precord.variance.mean[inactive] = 0
+                precord.variance.var[inactive] = 0
         if loss < self.best_loss:
             self.best_loss = loss
             self.num_bad_epochs = 0
@@ -163,7 +175,7 @@ class TrainerMCMC(Trainer):
         else:
             self.num_bad_epochs += 1
         if self.num_bad_epochs > self.patience:
-            self.flip_ratio = max(self.flip_ratio * 0.7, 1e-4)
+            self.flip_ratio = max(self.flip_ratio * 0.7, 1e-3)
             self.reset()
 
     def _monitor_functions(self):
@@ -192,5 +204,8 @@ class TrainerMCMCGibbs(TrainerMCMC):
 
     def accept(self, loss_new: Variable, loss_old: Variable) -> float:
         loss_delta = (loss_old - loss_new).data[0]
-        proba_accept = 1 / (1 + math.exp(-loss_delta / (self.flip_ratio * 1)))
+        try:
+            proba_accept = 1 / (1 + math.exp(-loss_delta / (self.flip_ratio * 0.1)))
+        except OverflowError:
+            proba_accept = int(loss_delta > 0)
         return proba_accept

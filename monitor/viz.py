@@ -11,8 +11,6 @@ from monitor.batch_timer import BatchTimer
 
 class VisdomMighty(visdom.Visdom):
     def __init__(self, env: str, timer: BatchTimer):
-        if os.environ.get('MCMC_DEBUG', False):
-            env = 'main'
         super().__init__(env=env)
         self.close(env=self.env)
         self.timer = timer

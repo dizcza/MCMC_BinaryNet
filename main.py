@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.utils.data
 
 from layers import ScaleLayer, BinaryDecorator, binarize_model
-from trainer import TrainerGradFullPrecision, TrainerMCMC, TrainerGradBinary, TrainerMCMCTree
+from trainer import TrainerGradFullPrecision, TrainerMCMC, TrainerGradBinary, TrainerMCMCTree, TrainerMCMCGibbs
 from utils import AdamCustomDecay
 
 
@@ -25,24 +25,24 @@ class NetBinary(nn.Module):
             conv_layers.append(nn.Conv2d(in_features, out_features, kernel_size=conv_kernel, padding=0, bias=False))
             conv_layers.append(nn.MaxPool2d(kernel_size=2))
             conv_layers.append(nn.PReLU())
-        self.conv_sequential = nn.Sequential(*conv_layers)
+        self.conv = nn.Sequential(*conv_layers)
 
         fc_layers = []
         for (in_features, out_features) in zip(fc_sizes[:-1], fc_sizes[1:]):
             if batch_norm:
                 fc_layers.append(nn.BatchNorm1d(in_features))
             fc_layers.append(nn.Linear(in_features, out_features, bias=False))
-            fc_layers.append(nn.PReLU(out_features))
-        self.fc_sequential = nn.Sequential(*fc_layers)
+            # fc_layers.append(nn.ReLU(inplace=True))
+        self.fc = nn.Sequential(*fc_layers)
         if scale_layer:
             self.scale_layer = ScaleLayer(size=fc_sizes[-1])
         else:
             self.scale_layer = None
 
     def forward(self, x):
-        x = self.conv_sequential(x)
+        x = self.conv(x)
         x = x.view(x.shape[0], -1)
-        x = self.fc_sequential(x)
+        x = self.fc(x)
         if self.scale_layer is not None:
             x = self.scale_layer(x)
         return x
@@ -64,18 +64,18 @@ def train_gradient(model: nn.Module = None, is_binary=True, dataset_name="MNIST"
                           dataset_name=dataset_name,
                           optimizer=optimizer,
                           scheduler=scheduler)
-    trainer.train(n_epoch=500, save=False, with_mutual_info=True)
+    trainer.train(n_epoch=50, save=False, with_mutual_info=True)
 
 
 def train_mcmc(model: nn.Module = None, dataset_name="MNIST"):
     if model is None:
         model = NetBinary(fc_sizes=linear_features[dataset_name], batch_norm=False)
     model = binarize_model(model)
-    trainer = TrainerMCMC(model,
+    trainer = TrainerMCMCGibbs(model,
                           criterion=nn.CrossEntropyLoss(),
                           dataset_name=dataset_name,
                           flip_ratio=0.1)
-    trainer.train(n_epoch=500, save=False, with_mutual_info=False, epoch_update_step=3)
+    trainer.train(n_epoch=500, save=False, with_mutual_info=0, epoch_update_step=1)
 
 
 def set_seed(seed: int):
@@ -88,6 +88,5 @@ def set_seed(seed: int):
 
 if __name__ == '__main__':
     set_seed(seed=113)
-    # train_gradient(NetBinary(fc_sizes=(784, 100, 20, 10), batch_norm=False), is_binary=False, dataset_name="MNIST")
-    train_gradient(NetBinary(fc_sizes=(25, 17, 10, 5, 2), batch_norm=False), dataset_name="MNIST56", is_binary=False)
-    # train_mcmc(NetBinary(fc_sizes=(25, 2), batch_norm=False), dataset_name="MNIST56")
+    # train_mcmc(NetBinary(fc_sizes=(25, 2), batch_norm=False, scale_layer=False), dataset_name="MNIST56")
+    train_mcmc(NetBinary(fc_sizes=(784, 10), batch_norm=False, scale_layer=False), dataset_name="MNIST")
