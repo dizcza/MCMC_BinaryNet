@@ -31,7 +31,7 @@ class NetBinary(nn.Module):
         for (in_features, out_features) in zip(fc_sizes[:-1], fc_sizes[1:]):
             fc_layers.append(nn.Linear(in_features, out_features, bias=False))
             if batch_norm:
-                fc_layers.append(nn.BatchNorm1d(in_features))
+                fc_layers.append(nn.BatchNorm1d(out_features))
             fc_layers.append(nn.ReLU(inplace=True))
         self.fc = nn.Sequential(*fc_layers)
         if scale_layer:
