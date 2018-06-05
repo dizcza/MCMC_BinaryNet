@@ -29,10 +29,10 @@ class NetBinary(nn.Module):
 
         fc_layers = []
         for (in_features, out_features) in zip(fc_sizes[:-1], fc_sizes[1:]):
+            fc_layers.append(nn.Linear(in_features, out_features, bias=False))
             if batch_norm:
                 fc_layers.append(nn.BatchNorm1d(in_features))
-            fc_layers.append(nn.Linear(in_features, out_features, bias=False))
-            # fc_layers.append(nn.ReLU(inplace=True))
+            fc_layers.append(nn.ReLU(inplace=True))
         self.fc = nn.Sequential(*fc_layers)
         if scale_layer:
             self.scale_layer = ScaleLayer(size=fc_sizes[-1])
@@ -51,7 +51,7 @@ class NetBinary(nn.Module):
 def train_gradient(model: nn.Module = None, is_binary=True, dataset_name="MNIST"):
     if model is None:
         model = NetBinary(fc_sizes=linear_features[dataset_name])
-    optimizer = AdamCustomDecay(model.parameters(), lr=1e-2, weight_decay=1e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10,
                                                            threshold=1e-3, min_lr=1e-4)
     if is_binary:
