@@ -65,6 +65,7 @@ def train_gradient(model: nn.Module = None, is_binary=True, dataset_name="MNIST"
                           optimizer=optimizer,
                           scheduler=scheduler)
     trainer.train(n_epoch=50, save=False, with_mutual_info=True)
+    return model
 
 
 def train_mcmc(model: nn.Module = None, dataset_name="MNIST"):
@@ -76,6 +77,7 @@ def train_mcmc(model: nn.Module = None, dataset_name="MNIST"):
                           dataset_name=dataset_name,
                           flip_ratio=0.1)
     trainer.train(n_epoch=500, save=False, with_mutual_info=0, epoch_update_step=1)
+    return model
 
 
 def set_seed(seed: int):
@@ -88,5 +90,6 @@ def set_seed(seed: int):
 
 if __name__ == '__main__':
     set_seed(seed=113)
-    # train_mcmc(NetBinary(fc_sizes=(25, 2), batch_norm=False, scale_layer=False), dataset_name="MNIST56")
-    train_mcmc(NetBinary(fc_sizes=(784, 10), batch_norm=False, scale_layer=False), dataset_name="MNIST")
+    model = train_gradient(NetBinary(fc_sizes=(784, 10), batch_norm=True, scale_layer=False), is_binary=False, dataset_name="MNIST")
+    # model = train_mcmc(model, dataset_name="MNIST")
+    # train_mcmc(NetBinary(fc_sizes=(784, 10), batch_norm=False, scale_layer=False), dataset_name="MNIST")

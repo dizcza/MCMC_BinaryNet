@@ -36,7 +36,6 @@ class ParamRecord(object):
         self.variance = VarianceOnline(tensor=param.data.cpu())
         self.grad_variance = VarianceOnline()
         self.prev_sign = param.data.cpu().clone()  # clone is faster
-        self.active = torch.ByteTensor(param.shape).fill_(1)
 
 
 class ParamsDict(UserDict):
@@ -45,7 +44,6 @@ class ParamsDict(UserDict):
         self.sign_flips = 0
         self.n_updates = 0
 
-    # todo move auto- & cross-correlation here
     def batch_finished(self):
         self.n_updates += 1
         for param_record in self.values():
@@ -55,6 +53,7 @@ class ParamsDict(UserDict):
                 new_data = new_data.clone()
             self.sign_flips += torch.sum((new_data * param_record.prev_sign) < 0)
             param_record.prev_sign = new_data
+            param_record.variance.update(new_data)
 
     def plot_sign_flips(self, viz: VisdomMighty):
         if len(self) == 0:
@@ -63,17 +62,13 @@ class ParamsDict(UserDict):
         param_count = 0
         for param_record in self.values():
             param_count += torch.numel(param_record.param)
-        flips = self.sign_flips
-        flips /= param_count  # per param
-        flips /= self.n_updates  # per update
-        flips *= 100.  # percents
-        self.sign_flips = 0
-        self.n_updates = 0
-        viz.line_update(y=flips, win='sign', opts=dict(
+        viz.line_update(y=self.sign_flips / self.n_updates, win='sign', opts=dict(
             xlabel='Epoch',
-            ylabel='Sign flips, %',
+            ylabel='Sign flips',
             title="Sign flips after optimizer.step()",
         ))
+        self.sign_flips = 0
+        self.n_updates = 0
 
 
 class Monitor(object):
@@ -109,7 +104,7 @@ class Monitor(object):
     def log_binary_ratio(self):
         n_params_full = sum(map(torch.numel, self.model.parameters()))
         n_params_binary = sum(map(torch.numel, parameters_binary(self.model)))
-        self.log(f"Parameters binary={n_params_binary:e} / total={n_params_full}"
+        self.log(f"Parameters binary={n_params_binary} / total={n_params_full}"
                  f" = {100. * n_params_binary / n_params_full:.2f} %")
 
     def log_model(self, model: nn.Module, space='-'):
@@ -127,6 +122,10 @@ class Monitor(object):
         if self.timer.epoch == 0:
             self.mutual_info.update(self.model)
             self.mutual_info.plot(self.viz)
+
+    def start_training(self):
+        self.mutual_info.update(self.model)
+        self.mutual_info.plot(self.viz)
 
     def update_loss(self, loss: float, mode='batch'):
         self.viz.line_update(loss, win=f'loss', opts=dict(
@@ -190,7 +189,6 @@ class Monitor(object):
         self.viz.text(f'Training time: {self.timer.training_time()}', win='status', append=True)
 
     def epoch_finished(self):
-        self.update_timings()
         self.update_accuracy_test()
         self.mutual_info.plot(self.viz)
         self.param_records.plot_sign_flips(self.viz)
@@ -198,7 +196,7 @@ class Monitor(object):
             self.viz.line_update(y=func(), win=f"func_{func_id}", opts=opts)
         self.update_gradient_mean_std()
         self.update_heatmap_history()
-        # self.update_distribution()
+        self.update_distribution()
 
     def register_layer(self, layer: nn.Module, prefix: str):
         self.mutual_info.register(layer, name=prefix)
@@ -224,14 +222,9 @@ class Monitor(object):
 
         for name, param_record in self.param_records.items():
             mean, std = param_record.variance.get_mean_std()
-            heatmap_by_dim(X=mean, win=f'Heatmap {name} Mean')
-            # heatmap(X=std, win=f'Heatmap {name} STD')
+            # heatmap_by_dim(X=mean, win=f'Heatmap {name} Mean')
             # heatmap(X=std / mean.abs(), win=f'Heatmap {name} Coef of variation')
-            isnan = std == 0
-            if not isnan.all():
-                tstat = mean.abs() / std
-                tstat[isnan] = tstat[~isnan].max()
-                heatmap_by_dim(X=tstat, win=f'Heatmap {name} t-statistics')
+            heatmap_by_dim(X=mean.abs() / (std + 1e-6), win=f'Heatmap {name} t-statistics')
 
 
 class MonitorMCMC(Monitor):
@@ -247,8 +240,6 @@ class MonitorMCMC(Monitor):
     def mcmc_step(self, param_flips):
         self.autocorrelation.add_samples(param_flips)
         self.graph_mcmc.add_samples(param_flips)
-        for pflip in param_flips:
-            self.param_records[pflip.name].variance.update(pflip.param.data.cpu())
 
     def epoch_finished(self):
         super().epoch_finished()

@@ -12,6 +12,9 @@ def binarize_model(model: nn.Module, drop_layers=(nn.Dropout,), keep_data=True) 
                       or re-sample (False) as two Gaussian peaks near 0.5 and -0.5
     :return: model with linear and conv layers wrapped in BinaryDecorator
     """
+    if isinstance(model, BinaryDecorator):
+        print("Layer is already binarized.")
+        return model
     for name, child in list(model.named_children()):
         if isinstance(child, drop_layers):
             delattr(model, name)

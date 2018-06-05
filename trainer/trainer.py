@@ -92,6 +92,8 @@ class Trainer(ABC):
             get_outputs = self.monitor.mutual_info.decorate_evaluation(get_outputs)
             self.monitor.mutual_info.prepare(eval_loader)
 
+        self.monitor.start_training()
+
         for epoch in range(n_epoch):
             labels, outputs, loss = None, None, None
             for images, labels in tqdm(self.train_loader,

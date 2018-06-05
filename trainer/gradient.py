@@ -19,7 +19,8 @@ class TrainerGradFullPrecision(Trainer):
             self.monitor.register_func(lambda: list(group['lr'] for group in self.optimizer.param_groups), opts=dict(
                 xlabel='Epoch',
                 ylabel='Learning rate',
-                title='Learning rate'
+                title='Learning rate',
+                ytype='log',
             ))
 
     def train_batch(self, images, labels):
