@@ -36,6 +36,22 @@ class ParamRecord(object):
         self.variance = VarianceOnline(tensor=param.data.cpu())
         self.grad_variance = VarianceOnline()
         self.prev_sign = param.data.cpu().clone()  # clone is faster
+        self.inactive = torch.ByteTensor(self.param.shape).fill_(0)
+
+    def freeze(self, tstat_min: float):
+        """
+        Freezes insignificant parameters.
+        :param tstat_min: t-statistics threshold
+        """
+        self.inactive |= self.tstat() < tstat_min
+
+    def tstat(self) -> torch.FloatTensor:
+        """
+        :return: t-statistics of the parameters history
+        """
+        mean, std = self.variance.get_mean_std()
+        tstat = mean.abs() / (std + 1e-6)
+        return tstat
 
 
 class ParamsDict(UserDict):
@@ -197,6 +213,7 @@ class Monitor(object):
         self.update_gradient_mean_std()
         self.update_heatmap_history()
         self.update_distribution()
+        self.update_active_count()
 
     def register_layer(self, layer: nn.Module, prefix: str):
         self.mutual_info.register(layer, name=prefix)
@@ -221,10 +238,23 @@ class Monitor(object):
                 heatmap(x_dim, win=f'{win}: dim {dim}', **opts_kwargs)
 
         for name, param_record in self.param_records.items():
-            mean, std = param_record.variance.get_mean_std()
-            # heatmap_by_dim(X=mean, win=f'Heatmap {name} Mean')
-            # heatmap(X=std / mean.abs(), win=f'Heatmap {name} Coef of variation')
-            heatmap_by_dim(X=mean.abs() / (std + 1e-6), win=f'Heatmap {name} t-statistics')
+            # heatmap_by_dim(X=param_record.variance.mean.copy(), win=f'Heatmap {name} Mean')
+            heatmap_by_dim(X=param_record.tstat(), win=f'Heatmap {name} t-statistics')
+
+    def update_active_count(self):
+        legend = []
+        active_percents = []
+        for name, param_record in self.param_records.items():
+            legend.append(name)
+            total = param_record.param.numel()
+            n_active = total - param_record.inactive.sum()
+            active_percents.append(100 * n_active / total)
+        self.viz.line_update(y=active_percents, win='active weights', opts=dict(
+            xlabel='Epoch',
+            ylabel='active, %',
+            legend=legend,
+            title='% of active weights',
+        ))
 
 
 class MonitorMCMC(Monitor):

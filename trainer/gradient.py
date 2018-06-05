@@ -28,10 +28,15 @@ class TrainerGradFullPrecision(Trainer):
         outputs = self.model(images)
         loss = self.criterion(outputs, labels)
         loss.backward()
+        for name, param in self.model.named_parameters():
+            if param.grad is not None and name in self.monitor.param_records:
+                inactive = self.monitor.param_records[name].inactive
+                param.grad[inactive] = 0
         self.optimizer.step(closure=None)
         return outputs, loss
 
     def _epoch_finished(self, epoch, outputs, labels):
+        super()._epoch_finished(epoch, outputs, labels)
         if isinstance(self.scheduler, ReduceLROnPlateau):
             loss = self.criterion(outputs, labels).data[0]
             self.scheduler.step(metrics=loss, epoch=epoch)

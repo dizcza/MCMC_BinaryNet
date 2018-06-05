@@ -154,20 +154,9 @@ class TrainerMCMC(Trainer):
         self.model.load_state_dict(self.best_model_state)
 
     def _epoch_finished(self, epoch, outputs, labels):
+        super()._epoch_finished(epoch, outputs, labels)
         loss = self.criterion(outputs, labels).data[0]
         self.monitor.update_loss(loss, mode='full train')
-        if (epoch + 1) % 10 == 0:
-            for name, param_record in self.monitor.param_records.items():
-                param = param_record.param
-                mean, std = param_record.variance.get_mean_std()
-                inactive = mean.abs() / (std + 1e-7) < 0.5
-                # mean = mean.sign()
-                # mean[inactive] = 0
-                # param.data = mean
-                self.monitor.viz.text(f'{name}: {inactive.sum()} / {inactive.numel()} are turned off', win='status2')
-                param.data[inactive] = 0
-                param_record.variance.mean[inactive] = 0
-                param_record.variance.var[inactive] = 0
         if loss < self.best_loss:
             self.best_loss = loss
             self.num_bad_epochs = 0
