@@ -33,6 +33,8 @@ def timer_profile(func):
 class ParamRecord(object):
     def __init__(self, param: nn.Parameter):
         self.param = param
+        self.initial_data = param.data.clone()
+        self.initial_norm = self.initial_data.norm(p=2)
         self.variance = VarianceOnline(tensor=param.data.cpu())
         self.grad_variance = VarianceOnline()
         self.prev_sign = param.data.cpu().clone()  # clone is faster
@@ -211,9 +213,11 @@ class Monitor(object):
         for func_id, (func, opts) in enumerate(self.functions):
             self.viz.line_update(y=func(), win=f"func_{func_id}", opts=opts)
         self.update_gradient_mean_std()
-        self.update_heatmap_history()
+        # self.update_heatmap_history()
         self.update_distribution()
         self.update_active_count()
+        self.update_initial_difference()
+        self.update_grad_norm()
 
     def register_layer(self, layer: nn.Module, prefix: str):
         self.mutual_info.register(layer, name=prefix)
@@ -255,6 +259,35 @@ class Monitor(object):
             legend=legend,
             title='% of active weights',
         ))
+
+    def update_initial_difference(self):
+        legend = []
+        dp_normed = []
+        for name, param_record in self.param_records.items():
+            legend.append(name)
+            dp = param_record.param.data - param_record.initial_data
+            dp = dp.norm(p=2) / param_record.initial_norm
+            dp_normed.append(dp)
+        self.viz.line_update(y=dp_normed, win='w_initial', opts=dict(
+            xlabel='Epoch',
+            ylabel='||W - W_initial|| / ||W_initial||',
+            title='How far the current weights are from the initial?',
+            legend=legend,
+        ))
+
+    def update_grad_norm(self):
+        grad_norms = []
+        for name, param_record in self.param_records.items():
+            grad = param_record.param.grad
+            if grad is not None:
+                grad_norms.append(grad.data.norm(p=2))
+        if len(grad_norms) > 0:
+            norm_mean = sum(grad_norms) / len(grad_norms)
+            self.viz.line_update(y=norm_mean, win='grad_norm', opts=dict(
+                xlabel='Epoch',
+                ylabel='Gradient norm, L2',
+                title='Average grad norm of all params',
+            ))
 
 
 class MonitorMCMC(Monitor):

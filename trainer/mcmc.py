@@ -176,7 +176,7 @@ class TrainerMCMC(Trainer):
         self.monitor.register_func(lambda: self.flip_ratio * 100., opts=dict(
             xlabel='Epoch',
             ylabel='Sign flip ratio, %',
-            title='MCMC flipped / total_neurons per layer'
+            title='MCMC flip_ratio'
         ))
 
 

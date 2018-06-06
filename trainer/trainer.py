@@ -61,7 +61,7 @@ class Trainer(ABC):
         raise NotImplementedError()
 
     def _epoch_finished(self, epoch, outputs, labels):
-        if (epoch + 1) % 10 == 0:
+        if (epoch + 1) % 1000 == 0:
             for name, param_record in self.monitor.param_records.items():
                 param_record.freeze(tstat_min=0.5)
 
