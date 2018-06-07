@@ -14,7 +14,7 @@ from monitor.mutual_info.mutual_info import MutualInfoKMeans, MutualInfoSign, Mu
 from monitor.var_online import VarianceOnline
 from monitor.viz import VisdomMighty
 from monitor.accuracy import calc_accuracy
-from utils import named_parameters_binary, parameters_binary, MNISTSmall, get_data_loader
+from utils import named_parameters_binary, parameters_binary, MNISTSmall, get_data_loader, factors_root
 
 
 def timer_profile(func):
@@ -52,7 +52,16 @@ class ParamRecord(object):
         :return: t-statistics of the parameters history
         """
         mean, std = self.variance.get_mean_std()
-        tstat = mean.abs() / (std + 1e-6)
+        tstat = mean.abs() / std
+        isnan = std == 0
+        if isnan.all():
+            tstat.fill_(0)
+        else:
+            tstat_nonnan = tstat[~isnan]
+            tstat_max = tstat_nonnan.mean() + 2 * tstat_nonnan.std()
+            tstat_nonnan.clamp_(max=tstat_max)
+            tstat[~isnan] = tstat_nonnan
+            tstat[isnan] = tstat_max
         return tstat
 
 
@@ -213,7 +222,7 @@ class Monitor(object):
         for func_id, (func, opts) in enumerate(self.functions):
             self.viz.line_update(y=func(), win=f"func_{func_id}", opts=opts)
         self.update_gradient_mean_std()
-        # self.update_heatmap_history()
+        self.update_heatmap_history()
         self.update_distribution()
         self.update_active_count()
         self.update_initial_difference()
@@ -224,26 +233,35 @@ class Monitor(object):
         for name, param in layer.named_parameters(prefix=prefix):
             self.param_records[name] = ParamRecord(param)
 
-    def update_heatmap_history(self):
-        def heatmap(X, win, **opts_kwargs):
-            self.viz.heatmap(X=X, win=win, opts=dict(
+    def update_heatmap_history(self, by_dim=False):
+        """
+        :param by_dim: use hitmap_by_dim for the last layer's weights
+        """
+        def heatmap(tensor: torch.FloatTensor, win: str):
+            self.viz.heatmap(X=tensor, win=win, opts=dict(
                 colormap='Jet',
                 title=win,
                 xlabel='input dimension',
                 ylabel='output dimension',
                 ytickstep=1,
-                **opts_kwargs
             ))
 
-        def heatmap_by_dim(X, win, **opts_kwargs):
-            for dim, x_dim in enumerate(X):
-                size = math.ceil(math.sqrt(x_dim.shape[0]))
-                x_dim = x_dim.view(size, size)
-                heatmap(x_dim, win=f'{win}: dim {dim}', **opts_kwargs)
+        def heatmap_by_dim(tensor: torch.FloatTensor, win: str):
+            for dim, x_dim in enumerate(tensor):
+                factors = factors_root(x_dim.shape[0])
+                x_dim = x_dim.view(factors)
+                heatmap(x_dim, win=f'{win}: dim {dim}')
+
+        names_backward = list(name for name, _ in self.model.named_parameters())[::-1]
+        name_last = None
+        for name in names_backward:
+            if name in self.param_records:
+                name_last = name
+                break
 
         for name, param_record in self.param_records.items():
-            # heatmap_by_dim(X=param_record.variance.mean.copy(), win=f'Heatmap {name} Mean')
-            heatmap_by_dim(X=param_record.tstat(), win=f'Heatmap {name} t-statistics')
+            heatmap_func = heatmap_by_dim if by_dim and name == name_last else heatmap
+            heatmap_func(tensor=param_record.tstat(), win=f'Heatmap {name} t-statistics')
 
     def update_active_count(self):
         legend = []
