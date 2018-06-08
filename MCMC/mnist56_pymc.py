@@ -1,7 +1,7 @@
+import numpy as np
+import pandas as pd
 import pymc3 as pm
 import theano.tensor as tt
-import pandas as pd
-import numpy as np
 
 mnist56_url = {
     "train": "https://www.dropbox.com/s/l7uppxi1wvfj45z/MNIST56_train.csv?dl=1",
@@ -29,8 +29,7 @@ def predict(x_data, w):
     :return: vector of size n of predicted labels
     """
     logit_vec = np.dot(x_data, w)
-    y_pred = logit_vec[:, 1] > logit_vec[:, 0]
-    y_pred = y_pred.astype(int)
+    y_pred = logit_vec.argmax(axis=1)
     return y_pred
 
 
@@ -44,7 +43,7 @@ def main():
         logit_vec = tt.dot(x_train, w)
         logit_p = logit_vec[:, 1] - logit_vec[:, 0]  # logit of p(y=1)
         y_obs = pm.Bernoulli('y_obs', logit_p=logit_p, observed=y_train)
-        trace = pm.sample(draws=10, njobs=1, chains=1, n_init=1000, tune=0)
+        trace = pm.sample(draws=11, njobs=1, chains=1, n_init=1000, tune=0)
     w_mean = trace.get_values('w').mean(axis=0)
     w_binary = (w_mean > 0.5).astype(int)
     x_test, y_test = prepare_data(fold_name="test")
