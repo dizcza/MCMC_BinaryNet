@@ -1,3 +1,6 @@
+import os
+import pickle
+
 import numpy as np
 import pymc3 as pm
 import theano.tensor as tt
@@ -28,10 +31,10 @@ def flatten_dataset(data_loader: torch.utils.data.DataLoader, cast_numpy=True, t
 def prepare_data(train=True, onehot=False, take_first=None):
     loader = get_data_loader(dataset="MNIST", train=train)
     x_data, y_data = flatten_dataset(data_loader=loader, cast_numpy=True, take_first=take_first)
-    x_data = (x_data > 0).astype(int)
+    x_data = (x_data > 0).astype(np.float32)
     if onehot:
         n_samples = len(y_data)
-        labels_onehot = np.zeros(shape=(n_samples, 10), dtype=int)
+        labels_onehot = np.zeros(shape=(n_samples, 10), dtype=np.int8)
         labels_onehot[range(n_samples), y_data] = 1
         y_data = labels_onehot
     return x_data, y_data
@@ -60,21 +63,28 @@ def softmax(vec):
 
 def main():
     np.random.seed(113)
-    x_train, y_train = prepare_data(train=True, onehot=True, take_first=256)
+    x_train, y_train = prepare_data(train=True, onehot=True, take_first=500)
     print(f"Using {len(x_train)} train samples.")
+    fpath_trace = os.path.join(os.path.dirname(__file__), "mnist_trace.pkl")
     model = pm.Model()
     with model:
         w = pm.Bernoulli('w', p=0.5, shape=(784, 10))
         logit_vec = tt.dot(x_train, w)
         proba = softmax(logit_vec)
         y_obs = pm.Multinomial('y_obs', n=1, p=proba, observed=y_train)
-        trace = pm.sample(draws=1, njobs=1, chains=1, n_init=100, tune=0)
+        trace = None
+        if os.path.exists(fpath_trace):
+            with open(fpath_trace, 'rb') as f:
+                trace = pickle.load(f)
+        trace = pm.sample(draws=3, njobs=1, chains=1, n_init=100, tune=0, trace=trace)
+    with open(fpath_trace, 'wb') as f:
+        pickle.dump(trace, f)
     w_mean = trace.get_values('w').mean(axis=0)
     w_binary = (w_mean > 0.5).astype(int)
     x_test, y_test = prepare_data(train=False, onehot=False)
     y_pred = predict(x_data=x_test, w=w_binary)
     accuracy = (y_pred == y_test).sum() / len(y_test)
-    print("Test accuracy: {}".format(accuracy))
+    print("Test accuracy: {:.3f}".format(accuracy))
 
 
 if __name__ == '__main__':
