@@ -43,13 +43,13 @@ def main():
         logit_vec = tt.dot(x_train, w)
         logit_p = logit_vec[:, 1] - logit_vec[:, 0]  # logit of p(y=1)
         y_obs = pm.Bernoulli('y_obs', logit_p=logit_p, observed=y_train)
-        trace = pm.sample(draws=101, njobs=1, chains=3, n_init=1000, tune=10)
+        trace = pm.sample(draws=101, njobs=1, chains=3, tune=10)
     print(pm.summary(trace))
     w_mean = trace.get_values('w').mean(axis=0)
     w_binary = (w_mean > 0.5).astype(int)
     x_test, y_test = prepare_data(fold_name="test")
     y_pred = predict(x_data=x_test, w=w_binary)
-    accuracy = (y_pred == y_test).sum() / len(y_test)
+    accuracy = (y_pred == y_test).mean()
     print("\nTest accuracy: {:.3f}".format(accuracy))
 
 
