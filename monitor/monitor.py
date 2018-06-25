@@ -33,11 +33,11 @@ def timer_profile(func):
 class ParamRecord(object):
     def __init__(self, param: nn.Parameter, monitor=False):
         self.param = param
-        self.prev_sign = param.data.cpu().clone()  # clone is faster
         self.is_monitored = monitor
         self.variance = VarianceOnline(tensor=param.data.cpu(), is_active=self.is_monitored)
         self.grad_variance = VarianceOnline(is_active=self.is_monitored)
         if self.is_monitored:
+            self.prev_sign = param.data.cpu().clone()  # clone is faster
             self.initial_data = param.data.clone()
             self.initial_norm = self.initial_data.norm(p=2)
             self.inactive = torch.ByteTensor(self.param.shape).fill_(0)
@@ -77,7 +77,7 @@ class ParamsDict(UserDict):
 
     def batch_finished(self):
         self.n_updates += 1
-        for param_record in self.values():
+        for param_record in self.values_monitored():
             param = param_record.param
             new_data = param.data.cpu()
             if new_data is param.data:
@@ -87,12 +87,9 @@ class ParamsDict(UserDict):
             param_record.variance.update(new_data)
 
     def plot_sign_flips(self, viz: VisdomMighty):
-        if len(self) == 0:
-            # haven't registered any param yet
+        if self.count_monitored() == 0:
+            # haven't registered any monitored params yet
             return
-        param_count = 0
-        for param_record in self.values():
-            param_count += torch.numel(param_record.param)
         viz.line_update(y=self.sign_flips / self.n_updates, win='sign', opts=dict(
             xlabel='Epoch',
             ylabel='Sign flips',
@@ -108,6 +105,13 @@ class ParamsDict(UserDict):
 
         return filter(pass_monitored, self.items())
 
+    def values_monitored(self):
+        for name, param_record in self.items_monitored():
+            yield param_record
+
+    def count_monitored(self):
+        return len(list(self.values_monitored()))
+
 
 class Monitor(object):
     # todo: feature maps
@@ -116,7 +120,7 @@ class Monitor(object):
         """
         :param trainer: Trainer instance
         """
-        self.watch_parameters = True
+        self.watch_parameters = False
         self.timer = timer
         self.timer.init(batches_in_epoch=len(trainer.train_loader))
         self.viz = VisdomMighty(env=f"{time.strftime('%Y-%b-%d')} "
@@ -231,10 +235,10 @@ class Monitor(object):
         self.update_accuracy_test()
         self.update_distribution()
         self.mutual_info.plot(self.viz)
-        self.param_records.plot_sign_flips(self.viz)
         for func_id, (func, opts) in enumerate(self.functions):
             self.viz.line_update(y=func(), win=f"func_{func_id}", opts=opts)
         # statistics below require monitored parameters
+        self.param_records.plot_sign_flips(self.viz)
         self.update_gradient_mean_std()
         self.update_heatmap_history()
         self.update_active_count()

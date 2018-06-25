@@ -62,7 +62,7 @@ class Trainer(ABC):
 
     def _epoch_finished(self, epoch, outputs, labels):
         if (epoch + 1) % 1000 == 0:
-            for name, param_record in self.monitor.param_records.items():
+            for name, param_record in self.monitor.param_records.items_monitored():
                 param_record.freeze(tstat_min=0.5)
 
     def train(self, n_epoch=10, save=True, with_mutual_info=False, epoch_update_step=1):
