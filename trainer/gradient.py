@@ -29,7 +29,8 @@ class TrainerGradFullPrecision(Trainer):
         loss = self.criterion(outputs, labels)
         loss.backward()
         for name, param in self.model.named_parameters():
-            if param.grad is not None and name in self.monitor.param_records:
+            if param.grad is not None and name in self.monitor.param_records and \
+                    self.monitor.param_records[name].is_monitored:
                 inactive = self.monitor.param_records[name].inactive
                 param.grad[inactive] = 0
         self.optimizer.step(closure=None)

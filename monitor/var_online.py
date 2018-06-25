@@ -13,14 +13,17 @@ class VarianceOnline(object):
     Online updating sample mean and unbiased variance in a single pass.
     """
 
-    def __init__(self, tensor: torch.FloatTensor = None):
+    def __init__(self, tensor: torch.FloatTensor = None, is_active=False):
         self.mean = None
         self.var = None
         self.count = 0
+        self.is_active = is_active
         if tensor is not None:
             self.update(new_tensor=tensor)
 
     def update(self, new_tensor: torch.FloatTensor):
+        if not self.is_active:
+            return
         self.count += 1
         if self.mean is None:
             self.mean = new_tensor.clone()
@@ -40,6 +43,12 @@ class VarianceOnline(object):
         self.var = None
         self.count = 0
 
+    def set_active(self, is_active: bool):
+        if self.is_active and not is_active:
+            # forget
+            self.reset()
+        self.is_active = is_active
+
 
 def dataset_mean_std(dataset_cls: type, batch_size=256):
     """
@@ -52,7 +61,7 @@ def dataset_mean_std(dataset_cls: type, batch_size=256):
     if not mean_std_file.exists():
         dataset = dataset_cls(DATA_DIR, train=True, download=True, transform=transforms.ToTensor())
         loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
-        var_online = VarianceOnline()
+        var_online = VarianceOnline(is_active=True)
         for images, labels in tqdm(loader, desc=f"{dataset_cls.__name__}: running online mean, std"):
             for image in images:
                 var_online.update(new_tensor=image)

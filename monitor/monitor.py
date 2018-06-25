@@ -31,26 +31,30 @@ def timer_profile(func):
 
 
 class ParamRecord(object):
-    def __init__(self, param: nn.Parameter):
+    def __init__(self, param: nn.Parameter, monitor=False):
         self.param = param
-        self.initial_data = param.data.clone()
-        self.initial_norm = self.initial_data.norm(p=2)
-        self.variance = VarianceOnline(tensor=param.data.cpu())
-        self.grad_variance = VarianceOnline()
         self.prev_sign = param.data.cpu().clone()  # clone is faster
-        self.inactive = torch.ByteTensor(self.param.shape).fill_(0)
+        self.is_monitored = monitor
+        self.variance = VarianceOnline(tensor=param.data.cpu(), is_active=self.is_monitored)
+        self.grad_variance = VarianceOnline(is_active=self.is_monitored)
+        if self.is_monitored:
+            self.initial_data = param.data.clone()
+            self.initial_norm = self.initial_data.norm(p=2)
+            self.inactive = torch.ByteTensor(self.param.shape).fill_(0)
 
     def freeze(self, tstat_min: float):
         """
         Freezes insignificant parameters.
         :param tstat_min: t-statistics threshold
         """
+        assert self.is_monitored, "Parameter is not monitored!"
         self.inactive |= self.tstat() < tstat_min
 
     def tstat(self) -> torch.FloatTensor:
         """
         :return: t-statistics of the parameters history
         """
+        assert self.is_monitored, "Parameter is not monitored!"
         mean, std = self.variance.get_mean_std()
         tstat = mean.abs() / std
         isnan = std == 0
@@ -97,6 +101,13 @@ class ParamsDict(UserDict):
         self.sign_flips = 0
         self.n_updates = 0
 
+    def items_monitored(self):
+        def pass_monitored(pair):
+            name, param_record = pair
+            return param_record.is_monitored
+
+        return filter(pass_monitored, self.items())
+
 
 class Monitor(object):
     # todo: feature maps
@@ -105,6 +116,7 @@ class Monitor(object):
         """
         :param trainer: Trainer instance
         """
+        self.watch_parameters = True
         self.timer = timer
         self.timer.init(batches_in_epoch=len(trainer.train_loader))
         self.viz = VisdomMighty(env=f"{time.strftime('%Y-%b-%d')} "
@@ -192,7 +204,7 @@ class Monitor(object):
                 ))
 
     def update_gradient_mean_std(self):
-        for name, param_record in self.param_records.items():
+        for name, param_record in self.param_records.items_monitored():
             param = param_record.param
             if param.grad is None:
                 continue
@@ -217,13 +229,14 @@ class Monitor(object):
 
     def epoch_finished(self):
         self.update_accuracy_test()
+        self.update_distribution()
         self.mutual_info.plot(self.viz)
         self.param_records.plot_sign_flips(self.viz)
         for func_id, (func, opts) in enumerate(self.functions):
             self.viz.line_update(y=func(), win=f"func_{func_id}", opts=opts)
+        # statistics below require monitored parameters
         self.update_gradient_mean_std()
         self.update_heatmap_history()
-        self.update_distribution()
         self.update_active_count()
         self.update_initial_difference()
         self.update_grad_norm()
@@ -231,7 +244,7 @@ class Monitor(object):
     def register_layer(self, layer: nn.Module, prefix: str):
         self.mutual_info.register(layer, name=prefix)
         for name, param in layer.named_parameters(prefix=prefix):
-            self.param_records[name] = ParamRecord(param)
+            self.param_records[name] = ParamRecord(param, monitor=self.watch_parameters)
 
     def update_heatmap_history(self, by_dim=False):
         """
@@ -259,14 +272,14 @@ class Monitor(object):
                 name_last = name
                 break
 
-        for name, param_record in self.param_records.items():
+        for name, param_record in self.param_records.items_monitored():
             heatmap_func = heatmap_by_dim if by_dim and name == name_last else heatmap
             heatmap_func(tensor=param_record.tstat(), win=f'Heatmap {name} t-statistics')
 
     def update_active_count(self):
         legend = []
         active_percents = []
-        for name, param_record in self.param_records.items():
+        for name, param_record in self.param_records.items_monitored():
             legend.append(name)
             total = param_record.param.numel()
             n_active = total - param_record.inactive.sum()
@@ -281,7 +294,7 @@ class Monitor(object):
     def update_initial_difference(self):
         legend = []
         dp_normed = []
-        for name, param_record in self.param_records.items():
+        for name, param_record in self.param_records.items_monitored():
             legend.append(name)
             dp = param_record.param.data - param_record.initial_data
             dp = dp.norm(p=2) / param_record.initial_norm
@@ -295,7 +308,7 @@ class Monitor(object):
 
     def update_grad_norm(self):
         grad_norms = []
-        for name, param_record in self.param_records.items():
+        for name, param_record in self.param_records.items_monitored():
             grad = param_record.param.grad
             if grad is not None:
                 grad_norms.append(grad.data.norm(p=2))
