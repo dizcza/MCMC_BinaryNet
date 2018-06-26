@@ -10,8 +10,8 @@ from monitor.batch_timer import BatchTimer
 
 
 class VisdomMighty(visdom.Visdom):
-    def __init__(self, env: str, timer: BatchTimer):
-        super().__init__(env=env)
+    def __init__(self, env: str, timer: BatchTimer, **kwargs):
+        super().__init__(env=env, **kwargs)
         self.close(env=self.env)
         self.timer = timer
         print(f"Monitor is opened at http://localhost:8097. Choose environment '{self.env}'.")

@@ -71,9 +71,9 @@ class ParameterFlipCached(ParameterFlip):
 
 
 class TrainerMCMC(Trainer):
-    def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str, flip_ratio=0.1):
+    def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str, flip_ratio=0.1, monitor_kwargs=dict()):
         compile_inference(model)
-        super().__init__(model, criterion, dataset_name, monitor_cls=MonitorMCMC)
+        super().__init__(model, criterion, dataset_name, monitor_cls=MonitorMCMC, monitor_kwargs=monitor_kwargs)
         self.volatile = True
         self.flip_ratio = flip_ratio
         self.monitor.log(f"Flip ratio: {flip_ratio}")
@@ -194,7 +194,7 @@ class TrainerMCMCGibbs(TrainerMCMC):
     def accept(self, loss_new: Variable, loss_old: Variable) -> float:
         loss_delta = (loss_old - loss_new).data[0]
         try:
-            proba_accept = 1 / (1 + math.exp(-loss_delta / (self.flip_ratio * 0.1)))
+            proba_accept = 1 / (1 + math.exp(-loss_delta / (self.flip_ratio * 1)))
         except OverflowError:
             proba_accept = int(loss_delta > 0)
         return proba_accept

@@ -16,12 +16,13 @@ from layers import ScaleLayer
 
 class Trainer(ABC):
 
-    def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str, monitor_cls: type = Monitor):
+    def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str, monitor_cls: type = Monitor,
+                 monitor_kwargs=dict()):
         self.model = model
         self.criterion = criterion
         self.dataset_name = dataset_name
         self.train_loader = get_data_loader(dataset_name, train=True)
-        self.monitor = monitor_cls(self)
+        self.monitor = monitor_cls(self, **monitor_kwargs)
         self._monitor_parameters(self.model)
         self.volatile = False
 
@@ -61,9 +62,7 @@ class Trainer(ABC):
         raise NotImplementedError()
 
     def _epoch_finished(self, epoch, outputs, labels):
-        if (epoch + 1) % 1000 == 0:
-            for name, param_record in self.monitor.param_records.items_monitored():
-                param_record.freeze(tstat_min=0.5)
+        pass
 
     def train(self, n_epoch=10, save=True, with_mutual_info=False, epoch_update_step=1):
         """

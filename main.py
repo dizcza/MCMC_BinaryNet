@@ -55,7 +55,7 @@ def train_gradient(model: nn.Module = None, is_binary=True, dataset_name="MNIST"
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10,
                                                            threshold=1e-3, min_lr=1e-4)
     if is_binary:
-        model = binarize_model(model, keep_data=False)
+        model = binarize_model(model, keep_data=True)
         trainer_cls = TrainerGradBinary
     else:
         trainer_cls = TrainerGradFullPrecision
@@ -75,7 +75,8 @@ def train_mcmc(model: nn.Module = None, dataset_name="MNIST"):
     trainer = TrainerMCMCGibbs(model,
                           criterion=nn.CrossEntropyLoss(),
                           dataset_name=dataset_name,
-                          flip_ratio=0.1)
+                          flip_ratio=0.01,
+                          monitor_kwargs=dict(watch_parameters=False))
     trainer.train(n_epoch=500, save=False, with_mutual_info=0, epoch_update_step=1)
     return model
 
@@ -90,6 +91,7 @@ def set_seed(seed: int):
 
 if __name__ == '__main__':
     set_seed(seed=113)
-    model = train_gradient(NetBinary(fc_sizes=(784, 10), batch_norm=True, scale_layer=False), is_binary=False, dataset_name="MNIST")
+    # model = train_gradient(NetBinary(fc_sizes=(784, 10), batch_norm=True), is_binary=True, dataset_name="MNIST")
     # model = train_mcmc(model, dataset_name="MNIST")
-    # train_mcmc(NetBinary(fc_sizes=(784, 10), batch_norm=False, scale_layer=False), dataset_name="MNIST")
+    train_mcmc(NetBinary(fc_sizes=(784, 10), batch_norm=False, scale_layer=False), dataset_name="MNIST")
+    # train_mcmc(NetBinary(fc_sizes=(25, 2), batch_norm=False, scale_layer=False), dataset_name="MNIST56")

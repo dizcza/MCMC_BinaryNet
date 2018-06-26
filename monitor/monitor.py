@@ -105,6 +105,9 @@ class ParamsDict(UserDict):
 
         return filter(pass_monitored, self.items())
 
+    def items_monitored_dict(self):
+        return {name: param for name, param in self.items_monitored()}
+
     def values_monitored(self):
         for name, param_record in self.items_monitored():
             yield param_record
@@ -116,16 +119,17 @@ class ParamsDict(UserDict):
 class Monitor(object):
     # todo: feature maps
 
-    def __init__(self, trainer):
+    def __init__(self, trainer, is_active=True, watch_parameters=False):
         """
         :param trainer: Trainer instance
         """
-        self.watch_parameters = False
+        self.is_active = is_active
+        self.watch_parameters = watch_parameters
         self.timer = timer
         self.timer.init(batches_in_epoch=len(trainer.train_loader))
         self.viz = VisdomMighty(env=f"{time.strftime('%Y-%b-%d')} "
                                     f"{trainer.dataset_name} "
-                                    f"{trainer.__class__.__name__}", timer=self.timer)
+                                    f"{trainer.__class__.__name__}", timer=self.timer, send=is_active)
         self.model = trainer.model
         self.test_loader = get_data_loader(dataset=trainer.dataset_name, train=False)
         self.param_records = ParamsDict()
@@ -327,8 +331,8 @@ class Monitor(object):
 
 class MonitorMCMC(Monitor):
 
-    def __init__(self, trainer):
-        super().__init__(trainer)
+    def __init__(self, trainer, is_active=True, watch_parameters=False):
+        super().__init__(trainer, is_active=is_active, watch_parameters=watch_parameters)
         self.autocorrelation = Autocorrelation(n_lags=self.timer.batches_in_epoch,
                                                with_autocorrelation=isinstance(trainer.train_loader.dataset,
                                                                                MNISTSmall))
