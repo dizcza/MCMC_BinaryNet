@@ -4,7 +4,7 @@ import torch.nn.modules.conv
 import torch.utils.data
 
 
-def binarize_model(model: nn.Module, drop_layers=(nn.Dropout,), keep_data=True) -> nn.Module:
+def binarize_model(model: nn.Module, drop_layers=(nn.ReLU, nn.PReLU), keep_data=True) -> nn.Module:
     """
     :param model: net model
     :param drop_layers: remove these layers from the input model
