@@ -9,6 +9,7 @@ graphs/
 
 # binary models
 models_bin/
+checkpoints/
 
 # python compiled
 *.pyc

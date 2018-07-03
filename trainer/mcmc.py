@@ -1,7 +1,6 @@
 import math
 import random
 from typing import List
-import copy
 
 import torch
 import torch.nn as nn
@@ -71,18 +70,14 @@ class ParameterFlipCached(ParameterFlip):
 
 
 class TrainerMCMC(Trainer):
-    def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str, flip_ratio=0.1, monitor_kwargs=dict()):
+    def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str, flip_ratio=0.1, **kwargs):
         compile_inference(model)
-        super().__init__(model, criterion, dataset_name, monitor_cls=MonitorMCMC, monitor_kwargs=monitor_kwargs)
+        super().__init__(model, criterion, dataset_name, monitor_cls=MonitorMCMC, **kwargs)
         self.volatile = True
         self.flip_ratio = flip_ratio
         self.monitor.log(f"Flip ratio: {flip_ratio}")
         self.accepted_count = 0
         self.update_calls = 0
-        self.patience = 5
-        self.num_bad_epochs = 0
-        self.best_loss = float('inf')
-        self.best_model_state = self.model.state_dict()
         for param in model.parameters():
             param.requires_grad = False
             param.volatile = True
@@ -147,25 +142,16 @@ class TrainerMCMC(Trainer):
             random.choice(named_parameters_binary(self.model))
         ])
 
-    def reset(self):
+    def reset_checkpoint(self):
+        super().reset_checkpoint()
+        self.flip_ratio = max(self.flip_ratio * 0.7, 1e-3)
         self.accepted_count = 0
         self.update_calls = 0
-        self.num_bad_epochs = 0
-        self.model.load_state_dict(self.best_model_state)
 
     def _epoch_finished(self, epoch, outputs, labels):
         super()._epoch_finished(epoch, outputs, labels)
-        loss = self.criterion(outputs, labels).data[0]
-        self.monitor.update_loss(loss, mode='full train')
-        if loss < self.best_loss:
-            self.best_loss = loss
-            self.num_bad_epochs = 0
-            self.best_model_state = copy.deepcopy(self.model.state_dict())
-        else:
-            self.num_bad_epochs += 1
-        if self.num_bad_epochs > self.patience:
-            self.flip_ratio = max(self.flip_ratio * 0.7, 1e-3)
-            self.reset()
+        if self.checkpoint.need_reset():
+            self.reset_checkpoint()
 
     def _monitor_functions(self):
         self.monitor.register_func(self.get_acceptance_ratio, opts=dict(

@@ -12,12 +12,13 @@ from monitor.monitor import Monitor
 from monitor.accuracy import calc_accuracy, argmax_accuracy, get_outputs
 from utils import get_data_loader, load_model_state
 from layers import ScaleLayer
+from trainer.checkpoint import Checkpoint
 
 
 class Trainer(ABC):
 
     def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str, monitor_cls: type = Monitor,
-                 monitor_kwargs=dict()):
+                 patience=None, monitor_kwargs=dict()):
         self.model = model
         self.criterion = criterion
         self.dataset_name = dataset_name
@@ -25,6 +26,7 @@ class Trainer(ABC):
         self.monitor = monitor_cls(self, **monitor_kwargs)
         self._monitor_parameters(self.model)
         self.volatile = False
+        self.checkpoint = Checkpoint(model=self.model, patience=patience)
 
     def save_model(self, accuracy: float = None):
         model_path = MODELS_DIR.joinpath(self.dataset_name, self.model.__class__.__name__).with_suffix('.pt')
@@ -34,6 +36,9 @@ class Trainer(ABC):
         if accuracy is not None:
             msg += f" (train accuracy: {accuracy:.4f})"
         print(msg)
+
+    def reset_checkpoint(self):
+        self.checkpoint.reset(model=self.model)
 
     def load_best_accuracy(self) -> float:
         best_accuracy = 0.
@@ -61,8 +66,11 @@ class Trainer(ABC):
     def train_batch(self, images, labels):
         raise NotImplementedError()
 
-    def _epoch_finished(self, epoch, outputs, labels):
-        pass
+    def _epoch_finished(self, epoch, outputs, labels) -> Variable:
+        loss = self.criterion(outputs, labels).data[0]
+        self.monitor.update_loss(loss, mode='full train')
+        self.checkpoint.step(model=self.model, loss=loss)
+        return loss
 
     def train(self, n_epoch=10, save=True, with_mutual_info=False, epoch_update_step=1):
         """
