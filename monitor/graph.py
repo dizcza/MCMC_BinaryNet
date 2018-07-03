@@ -37,13 +37,13 @@ class GraphMCMC(object):
 
     node_width = 0.2
 
-    def __init__(self, named_params: Iterable[Tuple], timer: BatchTimer, history_heatmap=False):
+    def __init__(self, named_param_shapes: Iterable[Tuple], timer: BatchTimer, history_heatmap=False):
         """
-        :param named_params: named binary parameters
+        :param named_param_shapes: named binary parameters shape
         :param timer: timer to schedule updates
         :param history_heatmap: draw history heatmap of all iterations?
         """
-        self.param_nodes = self.parse_parameters(named_params, history_heatmap=history_heatmap)
+        self.param_nodes = self.parse_parameters(named_param_shapes, history_heatmap=history_heatmap)
         self.with_history_heatmap = history_heatmap
         self.timer = timer
         self.graph = graphviz.Graph(name='graph_mcmc', directory='graphs', format='png',
@@ -58,11 +58,11 @@ class GraphMCMC(object):
             warnings.warn("To use graphviz features run 'sudo apt-get install graphviz'")
 
     @staticmethod
-    def parse_parameters(named_params: Iterable[Tuple], history_heatmap: bool) -> Dict[str, ParameterNode]:
+    def parse_parameters(named_param_shapes: Iterable[Tuple], history_heatmap: bool) -> Dict[str, ParameterNode]:
         source_name = 'input'
         pnodes = {}
-        for name, param in named_params:
-            pnodes[name] = ParameterNode(source_name=source_name, sink_name=name, shape=param.shape,
+        for name, param_shape in named_param_shapes:
+            pnodes[name] = ParameterNode(source_name=source_name, sink_name=name, shape=param_shape,
                                          history_heatmap=history_heatmap)
             source_name = name
         return pnodes

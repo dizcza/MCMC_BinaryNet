@@ -10,11 +10,12 @@ from monitor.batch_timer import BatchTimer
 
 
 class VisdomMighty(visdom.Visdom):
-    def __init__(self, env: str, timer: BatchTimer, **kwargs):
-        super().__init__(env=env, **kwargs)
+    def __init__(self, env: str, timer: BatchTimer, send=True):
+        super().__init__(env=env, send=send)
         self.close(env=self.env)
         self.timer = timer
-        print(f"Monitor is opened at http://localhost:8097. Choose environment '{self.env}'.")
+        if self.send:
+            print(f"Monitor is opened at http://localhost:8097. Choose environment '{self.env}'.")
         self.log(f"Batches in epoch: {timer.batches_in_epoch}")
         self.legends = defaultdict(list)
         self.register_plot(win='loss', legend=['batch', 'full train'])

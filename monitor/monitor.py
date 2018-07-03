@@ -130,13 +130,12 @@ class Monitor(object):
         self.viz = VisdomMighty(env=f"{time.strftime('%Y-%b-%d')} "
                                     f"{trainer.dataset_name} "
                                     f"{trainer.__class__.__name__}", timer=self.timer, send=is_active)
-        self.model = trainer.model
         self.test_loader = get_data_loader(dataset=trainer.dataset_name, train=False)
         self.param_records = ParamsDict()
         self.mutual_info = MutualInfoKMeans(estimate_size=int(1e3), compression_range=(0.5, 0.999))
         self.functions = []
-        self.log_model(self.model)
-        self.log_binary_ratio()
+        self.log_model(trainer.model)
+        self.log_binary_ratio(trainer.model)
         self.log_trainer(trainer)
 
     def log_trainer(self, trainer):
@@ -148,9 +147,9 @@ class Monitor(object):
                 optimizer_str += f"\n\tgroup {group_id}: lr={group['lr']}, weight_decay={group['weight_decay']}"
             self.log(optimizer_str)
 
-    def log_binary_ratio(self):
-        n_params_full = sum(map(torch.numel, self.model.parameters()))
-        n_params_binary = sum(map(torch.numel, parameters_binary(self.model)))
+    def log_binary_ratio(self,  model: nn.Module):
+        n_params_full = sum(map(torch.numel, model.parameters()))
+        n_params_binary = sum(map(torch.numel, parameters_binary(model)))
         self.log(f"Parameters binary={n_params_binary} / total={n_params_full}"
                  f" = {100. * n_params_binary / n_params_full:.2f} %")
 
@@ -163,15 +162,15 @@ class Monitor(object):
     def log(self, text: str):
         self.viz.log(text)
 
-    def batch_finished(self):
+    def batch_finished(self, model: nn.Module):
         self.param_records.batch_finished()
         self.timer.tick()
         if self.timer.epoch == 0:
-            self.mutual_info.update(self.model)
+            self.mutual_info.update(model)
             self.mutual_info.plot(self.viz)
 
-    def start_training(self):
-        self.mutual_info.update(self.model)
+    def start_training(self, model: nn.Module):
+        self.mutual_info.update(model)
         self.mutual_info.plot(self.viz)
 
     def update_loss(self, loss: float, mode='batch'):
@@ -189,8 +188,8 @@ class Monitor(object):
         ), name=mode)
 
     @Schedule(epoch_update=1)
-    def update_accuracy_test(self):
-        self.update_accuracy(accuracy=calc_accuracy(self.model, self.test_loader), mode='full test')
+    def update_accuracy_test(self, model: nn.Module):
+        self.update_accuracy(accuracy=calc_accuracy(model, self.test_loader), mode='full test')
 
     def register_func(self, func: Callable, opts: dict = None):
         self.functions.append((func, opts))
@@ -235,8 +234,8 @@ class Monitor(object):
         self.viz.text(f'Epoch duration: {self.timer.epoch_duration(): .2e} sec', win='status', append=True)
         self.viz.text(f'Training time: {self.timer.training_time()}', win='status', append=True)
 
-    def epoch_finished(self):
-        self.update_accuracy_test()
+    def epoch_finished(self, model: nn.Module):
+        self.update_accuracy_test(model)
         self.update_distribution()
         self.mutual_info.plot(self.viz)
         for func_id, (func, opts) in enumerate(self.functions):
@@ -244,7 +243,7 @@ class Monitor(object):
         # statistics below require monitored parameters
         self.param_records.plot_sign_flips(self.viz)
         self.update_gradient_mean_std()
-        self.update_heatmap_history()
+        self.update_heatmap_history(model)
         self.update_active_count()
         self.update_initial_difference()
         self.update_grad_norm()
@@ -254,8 +253,9 @@ class Monitor(object):
         for name, param in layer.named_parameters(prefix=prefix):
             self.param_records[name] = ParamRecord(param, monitor=self.watch_parameters)
 
-    def update_heatmap_history(self, by_dim=False):
+    def update_heatmap_history(self, model: nn.Module, by_dim=False):
         """
+        :param model: current model
         :param by_dim: use hitmap_by_dim for the last layer's weights
         """
         def heatmap(tensor: torch.FloatTensor, win: str):
@@ -273,7 +273,7 @@ class Monitor(object):
                 x_dim = x_dim.view(factors)
                 heatmap(x_dim, win=f'{win}: dim {dim}')
 
-        names_backward = list(name for name, _ in self.model.named_parameters())[::-1]
+        names_backward = list(name for name, _ in model.named_parameters())[::-1]
         name_last = None
         for name in names_backward:
             if name in self.param_records:
@@ -336,14 +336,15 @@ class MonitorMCMC(Monitor):
         self.autocorrelation = Autocorrelation(n_lags=self.timer.batches_in_epoch,
                                                with_autocorrelation=isinstance(trainer.train_loader.dataset,
                                                                                MNISTSmall))
-        self.graph_mcmc = GraphMCMC(named_params=named_parameters_binary(self.model), timer=self.timer,
+        named_param_shapes = iter((name, param.shape) for name, param in named_parameters_binary(trainer.model))
+        self.graph_mcmc = GraphMCMC(named_param_shapes=named_param_shapes, timer=self.timer,
                                     history_heatmap=True)
 
     def mcmc_step(self, param_flips):
         self.autocorrelation.add_samples(param_flips)
         self.graph_mcmc.add_samples(param_flips)
 
-    def epoch_finished(self):
-        super().epoch_finished()
+    def epoch_finished(self, model: nn.Module):
+        super().epoch_finished(model)
         # self.autocorrelation.plot(self.viz)
         # self.graph_mcmc.render(self.viz)

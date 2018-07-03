@@ -101,7 +101,7 @@ class Trainer(ABC):
             get_outputs = self.monitor.mutual_info.decorate_evaluation(get_outputs)
             self.monitor.mutual_info.prepare(eval_loader)
 
-        self.monitor.start_training()
+        self.monitor.start_training(self.model)
 
         for epoch in range(n_epoch):
             labels, outputs, loss = None, None, None
@@ -115,7 +115,7 @@ class Trainer(ABC):
                     labels = labels.cuda()
 
                 outputs, loss = self.train_batch(images, labels)
-                self.monitor.batch_finished()
+                self.monitor.batch_finished(self.model)
                 # self.monitor.update_loss(loss=loss.data[0], mode='batch')
                 # self.monitor.update_accuracy(argmax_accuracy(outputs, labels), mode='batch')
 
@@ -131,5 +131,5 @@ class Trainer(ABC):
                     best_accuracy = accuracy
                     self.monitor.log(f"Epoch {epoch}. Best train accuracy so far: {best_accuracy:.4f}")
 
-                self.monitor.epoch_finished()
+                self.monitor.epoch_finished(self.model)
                 self._epoch_finished(epoch, outputs_full, labels_full)

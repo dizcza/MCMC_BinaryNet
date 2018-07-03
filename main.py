@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.utils.data
 
 from layers import ScaleLayer, BinaryDecorator, binarize_model
-from trainer import TrainerGradFullPrecision, TrainerMCMC, TrainerGradBinary, TrainerMCMCTree, TrainerMCMCGibbs
+from trainer import TrainerGradFullPrecision, TrainerMCMC, TrainerGradBinary, TrainerMCMCTree, TrainerMCMCGibbs, ParallelTempering
 from utils import AdamCustomDecay
 
 
@@ -77,7 +77,17 @@ def train_mcmc(model: nn.Module = None, dataset_name="MNIST"):
                           dataset_name=dataset_name,
                           flip_ratio=0.01,
                           monitor_kwargs=dict(watch_parameters=False))
-    trainer.train(n_epoch=500, save=False, with_mutual_info=0, epoch_update_step=1)
+    trainer.train(n_epoch=500, save=False, with_mutual_info=False, epoch_update_step=1)
+    return model
+
+
+def train_tempering(model: nn.Module = None, dataset_name="MNIST"):
+    if model is None:
+        model = NetBinary(fc_sizes=linear_features[dataset_name], batch_norm=False)
+    model = binarize_model(model)
+    trainer = ParallelTempering(model, criterion=nn.CrossEntropyLoss(), dataset_name=dataset_name,
+                                trainer_cls=TrainerMCMCGibbs, n_chains=5, monitor_kwargs=dict(watch_parameters=False))
+    trainer.train(n_epoch=100, save=False, with_mutual_info=False, epoch_update_step=1)
     return model
 
 
@@ -93,5 +103,5 @@ if __name__ == '__main__':
     set_seed(seed=113)
     # model = train_gradient(NetBinary(fc_sizes=(784, 10), batch_norm=True), is_binary=True, dataset_name="MNIST")
     # model = train_mcmc(model, dataset_name="MNIST")
-    train_mcmc(NetBinary(fc_sizes=(784, 10), batch_norm=False, scale_layer=False), dataset_name="MNIST")
+    train_tempering(NetBinary(fc_sizes=(784, 10), batch_norm=False, scale_layer=False), dataset_name="MNIST")
     # train_mcmc(NetBinary(fc_sizes=(25, 2), batch_norm=False, scale_layer=False), dataset_name="MNIST56")
