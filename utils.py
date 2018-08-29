@@ -53,20 +53,19 @@ def has_binary_params(layer: nn.Module):
 
 
 def get_data_loader(dataset: str, train=True, batch_size=256) -> torch.utils.data.DataLoader:
-    transform_list = []
-    if dataset == "MNIST":
-        dataset_cls = datasets.MNIST
-        transform_list.append(transforms.ToTensor())
-        transform_list.append(NormalizeFromDataset(dataset_cls=dataset_cls))
-    elif dataset == "MNIST56":
-        dataset_cls = MNIST56
-    elif dataset == "CIFAR10":
-        dataset_cls = datasets.CIFAR10
-        transform_list.append(transforms.ToTensor())
-        transform_list.append(NormalizeFromDataset(dataset_cls=dataset_cls))
+    if dataset == "MNIST56":
+        dataset = MNIST56(train=train)
+    elif dataset == "MNIST56FullSize":
+        dataset = MNIST56FullSize(train=train)
     else:
-        raise NotImplementedError()
-    dataset = dataset_cls(DATA_DIR, train=train, download=True, transform=transforms.Compose(transform_list))
+        if dataset == "MNIST":
+            dataset_cls = datasets.MNIST
+        elif dataset == "CIFAR10":
+            dataset_cls = datasets.CIFAR10
+        else:
+            raise NotImplementedError()
+        transform = transforms.Compose([transforms.ToTensor(), NormalizeFromDataset(dataset_cls=dataset_cls)])
+        dataset = dataset_cls(DATA_DIR, train=train, download=True, transform=transform)
     loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
     return loader
 
@@ -141,14 +140,15 @@ class AdamCustomDecay(torch.optim.Adam):
 
 
 class MNISTSmall(torch.utils.data.TensorDataset):
-    def __init__(self, labels_keep=(5, 6), resize_to=(5, 5),  train=True):
+    def __init__(self, labels_keep=(5, 6), resize_to=None, train=True):
         self.train = train
         data_path = self.get_data_path()
         if not data_path.exists():
-            mnist = datasets.MNIST(DATA_DIR, train=train, transform=transforms.Compose(
-                [transforms.Resize(size=resize_to),
-                 transforms.ToTensor()]
-            ))
+            transform_list = []
+            if resize_to is not None:
+                transform_list.append(transforms.Resize(size=resize_to))
+            transform_list.append(transforms.ToTensor())
+            mnist = datasets.MNIST(DATA_DIR, train=train, transform=transforms.Compose(transform_list), download=True)
             self.process_mnist(mnist, labels_keep)
         with open(data_path, 'rb') as f:
             data, targets = torch.load(f)
@@ -181,5 +181,13 @@ class MNIST56(MNISTSmall):
     """
     MNIST 5 and 6 digits, resized to 5x5.
     """
-    def __init__(self, *args, train=True, **kwargs):
+    def __init__(self, train=True):
         super().__init__(labels_keep=(5, 6), resize_to=(5, 5), train=train)
+
+
+class MNIST56FullSize(MNISTSmall):
+    """
+    MNIST 5 and 6 digits, original 28x28 size.
+    """
+    def __init__(self, train=True):
+        super().__init__(labels_keep=(5, 6), resize_to=None, train=train)
