@@ -8,25 +8,16 @@ from utils import AdamCustomDecay
 
 
 linear_features = {
-    "MNIST": (28 ** 2, 10),
-    "MNIST56": (5 ** 2, 2),
-    "CIFAR10": (3 * 32 ** 2, 10),
+    "MNIST": (28 * 28, 10),
+    "MNIST56": (5 * 5, 2),
+    "MNIST56FullSize": (28 * 28, 2),
+    "CIFAR10": (3 * 32 * 32, 10),
 }
 
 
 class NetBinary(nn.Module):
-    def __init__(self, conv_channels=(), fc_sizes=(), conv_kernel=3, batch_norm=True, scale_layer=False):
+    def __init__(self, fc_sizes, batch_norm=True, scale_layer=False):
         super().__init__()
-
-        conv_layers = []
-        for (in_features, out_features) in zip(conv_channels[:-1], conv_channels[1:]):
-            if batch_norm:
-                conv_layers.append(nn.BatchNorm2d(in_features))
-            conv_layers.append(nn.Conv2d(in_features, out_features, kernel_size=conv_kernel, padding=0, bias=False))
-            conv_layers.append(nn.MaxPool2d(kernel_size=2))
-            conv_layers.append(nn.PReLU())
-        self.conv = nn.Sequential(*conv_layers)
-
         fc_layers = []
         for (in_features, out_features) in zip(fc_sizes[:-1], fc_sizes[1:]):
             fc_layers.append(nn.Linear(in_features, out_features, bias=False))
@@ -40,7 +31,6 @@ class NetBinary(nn.Module):
             self.scale_layer = None
 
     def forward(self, x):
-        x = self.conv(x)
         x = x.view(x.shape[0], -1)
         x = self.fc(x)
         if self.scale_layer is not None:
@@ -63,8 +53,9 @@ def train_gradient(model: nn.Module = None, is_binary=True, dataset_name="MNIST"
                           criterion=nn.CrossEntropyLoss(),
                           dataset_name=dataset_name,
                           optimizer=optimizer,
-                          scheduler=scheduler)
-    trainer.train(n_epoch=50, save=False, with_mutual_info=True)
+                          scheduler=scheduler,
+                          monitor_kwargs=dict(watch_parameters=True))
+    trainer.train(n_epoch=50, save=False, with_mutual_info=False)
     return model
 
 
@@ -102,6 +93,6 @@ def set_seed(seed: int):
 if __name__ == '__main__':
     set_seed(seed=113)
     # model = train_gradient(NetBinary(fc_sizes=(784, 10), batch_norm=True), is_binary=True, dataset_name="MNIST")
-    # model = train_mcmc(model, dataset_name="MNIST")
-    train_tempering(NetBinary(fc_sizes=(784, 10), batch_norm=False, scale_layer=False), dataset_name="MNIST")
+    model = train_mcmc(model=None, dataset_name="MNIST56FullSize")
+    # train_tempering(NetBinary(fc_sizes=(784, 10), batch_norm=False, scale_layer=False), dataset_name="MNIST")
     # train_mcmc(NetBinary(fc_sizes=(25, 2), batch_norm=False, scale_layer=False), dataset_name="MNIST56")

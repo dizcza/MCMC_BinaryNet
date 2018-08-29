@@ -14,7 +14,7 @@ from monitor.mutual_info.mutual_info import MutualInfoKMeans, MutualInfoSign, Mu
 from monitor.var_online import VarianceOnline
 from monitor.viz import VisdomMighty
 from monitor.accuracy import calc_accuracy
-from utils import named_parameters_binary, parameters_binary, MNISTSmall, get_data_loader, factors_root
+from utils import named_parameters_binary, parameters_binary, MNISTSmall, get_data_loader, factors_root, is_binary
 
 
 def timer_profile(func):
@@ -84,7 +84,7 @@ class ParamsDict(UserDict):
                 new_data = new_data.clone()
             self.sign_flips += torch.sum((new_data * param_record.prev_sign) < 0)
             param_record.prev_sign = new_data
-            param_record.variance.update(new_data)
+            param_record.variance.update(new_data.sign() if is_binary(param) else new_data)
 
     def plot_sign_flips(self, viz: VisdomMighty):
         if self.count_monitored() == 0:
