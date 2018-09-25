@@ -4,32 +4,6 @@ import torch.nn.modules.conv
 import torch.utils.data
 
 
-def binarize_model(model: nn.Module, drop_layers=(nn.ReLU, nn.PReLU), keep_data=True) -> nn.Module:
-    """
-    :param model: net model
-    :param drop_layers: remove these layers from the input model
-    :param keep_data: keep original parameters data (True)
-                      or re-sample (False) as two Gaussian peaks near 0.5 and -0.5
-    :return: model with linear and conv layers wrapped in BinaryDecorator
-    """
-    if isinstance(model, BinaryDecorator):
-        print("Layer is already binarized.")
-        return model
-    for name, child in list(model.named_children()):
-        if isinstance(child, drop_layers):
-            delattr(model, name)
-            continue
-        child_new = binarize_model(model=child, drop_layers=drop_layers, keep_data=keep_data)
-        if child_new is not child:
-            setattr(model, name, child_new)
-    if isinstance(model, (nn.modules.conv._ConvNd, nn.Linear)):
-        if hasattr(model, 'bias'):
-            delattr(model, 'bias')
-            model.register_parameter(name='bias', param=None)
-        model = BinaryDecorator(model, as_two_peaks=not keep_data)
-    return model
-
-
 def compile_inference(model: nn.Module):
     for name, child in list(model.named_children()):
         compile_inference(child)
@@ -55,15 +29,9 @@ class BinaryFunc(torch.autograd.Function):
 
 
 class BinaryDecorator(nn.Module):
-    def __init__(self, layer: nn.Module, as_two_peaks=False):
+    def __init__(self, layer: nn.Module):
         super().__init__()
         for param in layer.parameters():
-            if as_two_peaks:
-                data_peaks = 0.5 + 0.1 * torch.randn(param.data.shape)
-                data_peaks[torch.rand(data_peaks.shape) > 0.5] *= -1
-                if param.data.is_cuda:
-                    data_peaks = data_peaks.cuda()
-                param.data = data_peaks
             param.is_binary = True
         self.layer = layer
         self.is_inference = False
@@ -91,6 +59,39 @@ class BinaryDecorator(nn.Module):
         return tag + repr(self.layer)
 
 
+class BinaryDecoratorSoft(BinaryDecorator):
+
+    def __init__(self, layer: nn.Module):
+        super().__init__(layer=layer)
+        self.weight_threshold = nn.Parameter(torch.randn(layer.weight.shape))
+        self.activation_threshold = nn.Parameter(torch.randn(layer.in_features))
+        self.hardness = 1
+
+    def binary(self, tensor, soft=None):
+        if soft is None:
+            soft = self.training
+        if soft:
+            return (tensor * self.hardness).tanh()
+        else:
+            return tensor.sign()
+
+    def compile_inference(self):
+        self.layer.weigh.data = self.binary(self.layer.weight.data - self.weight_threshold.data, soft=False)
+        self.is_inference = True
+
+    def forward(self, x):
+        x = self.binary(x - self.activation_threshold)
+        if self.is_inference:
+            x = self.layer(x)
+        else:
+            weights_binary = self.binary(self.layer.weight - self.weight_threshold)
+            x = x @ weights_binary.t()
+        return x
+
+    def __repr__(self):
+        return "[Soft]" + super().__repr__()
+
+
 class ScaleLayer(nn.Module):
 
     def __init__(self, size: int, init_value=1e-3):
@@ -102,3 +103,29 @@ class ScaleLayer(nn.Module):
 
     def __repr__(self):
         return self.__class__.__name__ + f"(size={self.scale.numel()})"
+
+
+def binarize_model(model: nn.Module, drop_layers=(nn.ReLU, nn.PReLU), binarizer=BinaryDecorator) -> nn.Module:
+    """
+    :param model: net model
+    :param drop_layers: remove these layers from the input model
+    :param binarizer: what binarization to use: soft or hard
+    :return: model with linear and conv layers wrapped in BinaryDecorator
+    """
+    if isinstance(model, BinaryDecorator):
+        print("Layer is already binarized.")
+        return model
+    for name, child in list(model.named_children()):
+        if isinstance(child, drop_layers):
+            delattr(model, name)
+            continue
+        child_new = binarize_model(model=child, drop_layers=drop_layers, binarizer=binarizer)
+        if child_new is not child:
+            setattr(model, name, child_new)
+    if isinstance(model, (nn.modules.conv._ConvNd, nn.Linear)):
+        if hasattr(model, 'bias'):
+            delattr(model, 'bias')
+            model.register_parameter(name='bias', param=None)
+        model = binarizer(model)
+    return model
+

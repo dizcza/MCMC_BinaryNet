@@ -46,6 +46,18 @@ def find_param_by_name(model: nn.Module, name_search: str) -> Union[nn.Parameter
     return None
 
 
+def find_layers(model: nn.Module, layer_class):
+    for name, layer in find_named_layers(model, layer_class=layer_class):
+        yield layer
+
+
+def find_named_layers(model: nn.Module, layer_class, name_prefix=''):
+    for name, layer in model.named_children():
+        yield from find_named_layers(layer, layer_class, name_prefix=f"{name_prefix}.{name}")
+    if isinstance(model, layer_class):
+        yield name_prefix.lstrip('.'), model
+
+
 def has_binary_params(layer: nn.Module):
     if layer is None:
         return False

@@ -1,19 +1,18 @@
 import time
-from typing import Callable
 from collections import UserDict
+from typing import Callable
 
 import torch
 import torch.nn as nn
 import torch.utils.data
-import math
 
+from monitor.accuracy import calc_accuracy
 from monitor.autocorrelation import Autocorrelation
 from monitor.batch_timer import timer, Schedule
 from monitor.graph import GraphMCMC
-from monitor.mutual_info.mutual_info import MutualInfoKMeans, MutualInfoSign, MutualInfoKNN
+from monitor.mutual_info.mutual_info import MutualInfoKMeans
 from monitor.var_online import VarianceOnline
 from monitor.viz import VisdomMighty
-from monitor.accuracy import calc_accuracy
 from utils import named_parameters_binary, parameters_binary, MNISTSmall, get_data_loader, factors_root, is_binary
 
 
@@ -40,15 +39,6 @@ class ParamRecord(object):
             self.prev_sign = param.data.cpu().clone()  # clone is faster
             self.initial_data = param.data.clone()
             self.initial_norm = self.initial_data.norm(p=2)
-            self.inactive = torch.ByteTensor(self.param.shape).fill_(0)
-
-    def freeze(self, tstat_min: float):
-        """
-        Freezes insignificant parameters.
-        :param tstat_min: t-statistics threshold
-        """
-        assert self.is_monitored, "Parameter is not monitored!"
-        self.inactive |= self.tstat() < tstat_min
 
     def tstat(self) -> torch.FloatTensor:
         """
@@ -244,7 +234,6 @@ class Monitor(object):
         self.param_records.plot_sign_flips(self.viz)
         self.update_gradient_mean_std()
         self.update_heatmap_history(model)
-        self.update_active_count()
         self.update_initial_difference()
         self.update_grad_norm()
 
@@ -283,21 +272,6 @@ class Monitor(object):
         for name, param_record in self.param_records.items_monitored():
             heatmap_func = heatmap_by_dim if by_dim and name == name_last else heatmap
             heatmap_func(tensor=param_record.tstat(), win=f'Heatmap {name} t-statistics')
-
-    def update_active_count(self):
-        legend = []
-        active_percents = []
-        for name, param_record in self.param_records.items_monitored():
-            legend.append(name)
-            total = param_record.param.numel()
-            n_active = total - param_record.inactive.sum()
-            active_percents.append(100 * n_active / total)
-        self.viz.line_update(y=active_percents, win='active weights', opts=dict(
-            xlabel='Epoch',
-            ylabel='active, %',
-            legend=legend,
-            title='% of active weights',
-        ))
 
     def update_initial_difference(self):
         legend = []
