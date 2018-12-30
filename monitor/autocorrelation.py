@@ -6,7 +6,7 @@ import torch
 import visdom
 from statsmodels.tsa.stattools import acf, ccf
 
-from monitor.batch_timer import Schedule
+from monitor.batch_timer import ScheduleStep
 
 
 class Autocorrelation(object):
@@ -30,9 +30,9 @@ class Autocorrelation(object):
         """
         if self.with_autocorrelation or self.with_cross_correlation:
             for pflip in param_flips:
-                self.samples[pflip.name].append(pflip.param.data.cpu().view(-1))
+                self.samples[pflip.name].append(pflip.param.data.cpu().flatten())
 
-    @Schedule(epoch_update=1)
+    @ScheduleStep(epoch_step=1)
     def plot(self, viz: visdom.Visdom):
         self.calls += 1
 
@@ -40,7 +40,7 @@ class Autocorrelation(object):
             acf_weights = {}
             if len(samples) < self.n_lags:
                 continue
-            observations = torch.stack(samples, dim=0)
+            observations = torch.stack(tuple(samples), dim=0)
             observations.t_()
             observations = observations.numpy()
             active_rows_mask = list(map(np.any, np.diff(observations, axis=1)))

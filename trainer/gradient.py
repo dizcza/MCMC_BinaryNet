@@ -2,14 +2,18 @@ from typing import Union
 
 import torch.nn as nn
 import torch.utils.data
-from torch.autograd import Variable
 from torch.optim.lr_scheduler import _LRScheduler, ReduceLROnPlateau
 
 from trainer.trainer import Trainer
-from utils import parameters_binary
+from utils.binary_param import parameters_binary
+from utils.layers import binarize_model
 
 
-class TrainerGradFullPrecision(Trainer):
+class TrainerGrad(Trainer):
+    """
+    Default gradient descent trainer with full float precision.
+    """
+
     def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str,
                  optimizer: torch.optim.Optimizer,
                  scheduler: Union[_LRScheduler, ReduceLROnPlateau, None] = None,
@@ -17,13 +21,27 @@ class TrainerGradFullPrecision(Trainer):
         super().__init__(model, criterion, dataset_name, **kwargs)
         self.optimizer = optimizer
         self.scheduler = scheduler
-        if self.scheduler is not None:
-            self.monitor.register_func(lambda: list(group['lr'] for group in self.optimizer.param_groups), opts=dict(
+
+    def monitor_functions(self):
+        super().monitor_functions()
+
+        def learning_rate(viz):
+            viz.line_update(y=[group['lr'] for group in self.optimizer.param_groups], opts=dict(
                 xlabel='Epoch',
                 ylabel='Learning rate',
                 title='Learning rate',
                 ytype='log',
             ))
+
+        if self.scheduler is not None:
+            self.monitor.register_func(learning_rate)
+
+    def log_trainer(self):
+        super().log_trainer()
+        optimizer_str = f"Optimizer {self.optimizer.__class__.__name__}:"
+        for group_id, group in enumerate(self.optimizer.param_groups):
+            optimizer_str += f"\n\tgroup {group_id}: lr={group['lr']}, weight_decay={group['weight_decay']}"
+        self.monitor.log(optimizer_str)
 
     def train_batch(self, images, labels):
         self.optimizer.zero_grad()
@@ -33,7 +51,7 @@ class TrainerGradFullPrecision(Trainer):
         self.optimizer.step(closure=None)
         return outputs, loss
 
-    def _epoch_finished(self, epoch, outputs, labels) -> Variable:
+    def _epoch_finished(self, epoch, outputs, labels):
         loss = super()._epoch_finished(epoch, outputs, labels)
         if isinstance(self.scheduler, ReduceLROnPlateau):
             self.scheduler.step(metrics=loss, epoch=epoch)
@@ -41,8 +59,33 @@ class TrainerGradFullPrecision(Trainer):
             self.scheduler.step(epoch=epoch)
         return loss
 
+    def state_dict(self):
+        state = super().state_dict()
+        state['optimizer'] = self.optimizer.state_dict()
+        state['criterion'] = self.criterion.state_dict()
+        return state
 
-class TrainerGradBinary(TrainerGradFullPrecision):
+    def restore(self, checkpoint_path=None, strict=True):
+        checkpoint_state = super().restore(checkpoint_path=checkpoint_path, strict=strict)
+        try:
+            if checkpoint_state is not None:
+                self.optimizer.load_state_dict(checkpoint_state['optimizer'])
+                self.criterion.load_state_dict(checkpoint_state['criterion'])
+        except Exception as exception:
+            print("Couldn't restore optimizer: ", exception)
+        return checkpoint_state
+
+
+class TrainerGradBinary(TrainerGrad):
+
+    def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str,
+                 optimizer: torch.optim.Optimizer,
+                 scheduler: Union[_LRScheduler, ReduceLROnPlateau, None] = None,
+                 **kwargs):
+        model = binarize_model(model)
+        super().__init__(model=model, criterion=criterion, dataset_name=dataset_name, optimizer=optimizer,
+                         scheduler=scheduler, **kwargs)
+
     def train_batch(self, images, labels):
         outputs, loss = super().train_batch(images, labels)
         for param in parameters_binary(self.model):

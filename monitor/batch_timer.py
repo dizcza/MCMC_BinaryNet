@@ -1,7 +1,6 @@
-import datetime
-import time
-import warnings
-from collections import defaultdict
+import math
+from abc import ABC, abstractmethod
+from functools import wraps
 from typing import Callable
 
 
@@ -10,14 +9,9 @@ class BatchTimer(object):
     def __init__(self):
         self.batches_in_epoch = 1  # will be set next
         self.batch_id = 0
-        self.batch_time = defaultdict(lambda: time.time())
-        self.start_training_time = time.time()
-        self.checkpoints = []
 
     def init(self, batches_in_epoch: int):
         self.batches_in_epoch = batches_in_epoch
-        for checkpoint in self.checkpoints:
-            checkpoint.init(batches_in_epoch)
 
     @property
     def epoch(self):
@@ -26,49 +20,65 @@ class BatchTimer(object):
     def epoch_progress(self):
         return self.batch_id / self.batches_in_epoch
 
+    def is_epoch_finished(self):
+        return self.batch_id > 0 and self.batch_id % self.batches_in_epoch == 0
+
     def tick(self):
-        self.batch_time[self.batch_id] = time.time()
         self.batch_id += 1
 
-    def batch_duration(self) -> float:
-        if self.batch_id == 0:
-            return 0
-        return (self.batch_time[self.batch_id - 1] - self.batch_time[0]) / self.batch_id
-
-    def epoch_duration(self):
-        return self.batch_duration() * self.batches_in_epoch
-
-    def training_time(self):
-        return datetime.timedelta(seconds=int(time.time() - self.start_training_time))
+    def set_epoch(self, epoch):
+        self.batch_id = self.batches_in_epoch * epoch
 
 
 timer = BatchTimer()
 
 
-class Schedule(object):
-    def __init__(self, epoch_update: int = 1, batch_update: int = 0):
-        self.epoch_update = epoch_update
-        self.batch_update = batch_update
-        self.batch_step = 1
-        self.next_batch = self.batch_step
-        self.initialized = False
-        timer.checkpoints.append(self)
+class Schedule(ABC):
+    """
+    Schedule the next update program.
+    """
+    
+    def __init__(self):
+        self.last_batch_update = -1
 
-    def init(self, batches_in_epoch: int):
-        self.batch_step = batches_in_epoch * self.epoch_update + self.batch_update
-        self.next_batch = self.batch_step
-        self.initialized = True
-
-    def need_update(self, current_batch) -> bool:
-        if current_batch >= self.next_batch:
-            self.next_batch += self.batch_step
-            return True
-        return False
+    @abstractmethod
+    def next_batch_update(self):
+        """
+        :return: the next batch when update is needed
+        """
+        return 0
 
     def __call__(self, func: Callable):
+        @wraps(func)
         def wrapped(*args, **kwargs):
-            if not self.initialized:
-                warnings.warn("Timer is not initialized!")
-            if self.need_update(timer.batch_id):
+            if self.last_batch_update == -1:
+                # restore the last trained batch
+                self.last_batch_update = timer.batch_id - 1
+            if timer.batch_id >= self.next_batch_update():
+                self.last_batch_update = timer.batch_id
                 func(*args, **kwargs)
         return wrapped
+
+
+class ScheduleStep(Schedule):
+    def __init__(self, epoch_step: int = 1, batch_step: int = 0):
+        super().__init__()
+        self.epoch_step = epoch_step
+        self.batch_step = batch_step
+
+    def next_batch_update(self):
+        return self.last_batch_update + timer.batches_in_epoch * self.epoch_step + self.batch_step
+
+
+class ScheduleExp(Schedule):
+    """
+    Schedule updates at batches that are powers of two: 1, 2, 4, 8, 16, ...
+    Handy for the first epoch.
+    """
+
+    def next_batch_update(self):
+        if self.last_batch_update > 0:
+            next_power = math.floor(math.log2(self.last_batch_update)) + 1
+        else:
+            next_power = 0
+        return 2 ** next_power

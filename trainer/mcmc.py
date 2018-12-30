@@ -5,12 +5,13 @@ from typing import List
 import torch
 import torch.nn as nn
 import torch.utils.data
-from torch.autograd import Variable
+import torch.utils.data
 
-from layers import compile_inference
-from monitor.monitor import MonitorMCMC
+from utils.layers import compile_inference, binarize_model
+from monitor.monitor_mcmc import MonitorMCMC
 from trainer.trainer import Trainer
-from utils import named_parameters_binary
+from utils.binary_param import named_parameters_binary
+from utils.common import get_data_loader
 
 
 class ParameterFlip(object):
@@ -24,27 +25,20 @@ class ParameterFlip(object):
         assert param.ndimension() == 2, "For now, only nn.Linear is supported"
         self.name = name
         self.param = param
-        self.source = source
-        self.sink = sink
+        self.source = torch.as_tensor(source, dtype=torch.int64, device=self.param.device)
+        self.sink = torch.as_tensor(sink, dtype=torch.int64, device=self.param.device).unsqueeze(dim=1)
+
+    @property
+    def source_expanded(self):
+        return self.source.expand(len(self.sink), -1)
 
     def construct_flip(self) -> torch.ByteTensor:
-        # hack to select and modify a sub-matrix
         idx_connection_flip = torch.ByteTensor(self.param.data.shape).fill_(0)
-        idx_connection_flip_output = idx_connection_flip[self.sink, :]
-        idx_connection_flip_output[:, self.source] = True
-        idx_connection_flip[self.sink, :] = idx_connection_flip_output
+        idx_connection_flip[self.sink, self.source_expanded] = 1
         return idx_connection_flip
 
     def flip(self):
-        idx_flipped = self.get_idx_flipped()
-        idx_flipped_cuda = idx_flipped
-        if self.param.is_cuda:
-            idx_flipped_cuda = idx_flipped.cuda()
-        self.param[idx_flipped_cuda] *= -1
-        del idx_flipped_cuda
-
-    def get_idx_flipped(self) -> torch.ByteTensor:
-        return self.construct_flip()
+        self.param[self.sink, self.source_expanded] *= -1
 
     def restore(self):
         self.flip()
@@ -60,10 +54,6 @@ class ParameterFlipCached(ParameterFlip):
         """
         super().__init__(name, param, source, sink)
         self.data_backup = self.param.data.clone()
-        self.idx_flipped = self.construct_flip()
-
-    def get_idx_flipped(self):
-        return self.idx_flipped
 
     def restore(self):
         self.param.data = self.data_backup
@@ -71,17 +61,23 @@ class ParameterFlipCached(ParameterFlip):
 
 class TrainerMCMC(Trainer):
     def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str, flip_ratio=0.1, **kwargs):
+        model = binarize_model(model)
         compile_inference(model)
-        super().__init__(model, criterion, dataset_name, monitor_cls=MonitorMCMC, **kwargs)
-        self.volatile = True
+        super().__init__(model=model, criterion=criterion, dataset_name=dataset_name, **kwargs)
         self.flip_ratio = flip_ratio
-        self.monitor.log(f"Flip ratio: {flip_ratio}")
         self.accepted_count = 0
         self.update_calls = 0
         for param in model.parameters():
-            param.requires_grad = False
-            param.volatile = True
-        self._monitor_functions()
+            param.requires_grad_(False)
+
+    def _init_monitor(self):
+        monitor = MonitorMCMC(test_loader=get_data_loader(self.dataset_name, train=False),
+                              accuracy_measure=self.accuracy_measure, model=self.model)
+        return monitor
+
+    def log_trainer(self):
+        super().log_trainer()
+        self.monitor.log(f"Flip ratio: {self.flip_ratio}")
 
     def get_acceptance_ratio(self) -> float:
         if self.update_calls == 0:
@@ -92,15 +88,15 @@ class TrainerMCMC(Trainer):
     def sample_neurons(self, size) -> List[int]:
         return random.sample(range(size), k=math.ceil(size * self.flip_ratio))
 
-    def accept(self, loss_new: Variable, loss_old: Variable) -> float:
-        loss_delta = (loss_new - loss_old).data[0]
+    def accept(self, loss_new: torch.Tensor, loss_old: torch.Tensor) -> float:
+        loss_delta = (loss_new - loss_old).item()
         if loss_delta < 0:
             proba_accept = 1.0
         else:
             proba_accept = math.exp(-loss_delta / (self.flip_ratio * 1))
         return proba_accept
 
-    def train_batch_mcmc(self, images: Variable, labels: Variable, named_params):
+    def train_batch_mcmc(self, images, labels, named_params):
         outputs_orig = self.model(images)
         loss_orig = self.criterion(outputs_orig, labels)
 
@@ -142,28 +138,17 @@ class TrainerMCMC(Trainer):
             random.choice(named_parameters_binary(self.model))
         ])
 
-    def reset_checkpoint(self):
-        super().reset_checkpoint()
-        self.flip_ratio = max(self.flip_ratio * 0.7, 1e-3)
-        self.accepted_count = 0
-        self.update_calls = 0
+    def monitor_functions(self):
+        super().monitor_functions()
 
-    def _epoch_finished(self, epoch, outputs, labels):
-        super()._epoch_finished(epoch, outputs, labels)
-        if self.checkpoint.need_reset():
-            self.reset_checkpoint()
+        def acceptance_ratio(viz):
+            viz.line_update(y=self.get_acceptance_ratio(), opts=dict(
+                xlabel='Epoch',
+                ylabel='Acceptance ratio',
+                title='MCMC accepted / total_tries'
+            ))
 
-    def _monitor_functions(self):
-        self.monitor.register_func(self.get_acceptance_ratio, opts=dict(
-            xlabel='Epoch',
-            ylabel='Acceptance ratio',
-            title='MCMC accepted / total_tries'
-        ))
-        self.monitor.register_func(lambda: self.flip_ratio * 100., opts=dict(
-            xlabel='Epoch',
-            ylabel='Sign flip ratio, %',
-            title='MCMC flip_ratio'
-        ))
+        self.monitor.register_func(acceptance_ratio)
 
 
 class TrainerMCMCTree(TrainerMCMC):
@@ -177,8 +162,8 @@ class TrainerMCMCGibbs(TrainerMCMC):
     Probability to find a model in a given state is ~ exp(-loss/kT).
     """
 
-    def accept(self, loss_new: Variable, loss_old: Variable) -> float:
-        loss_delta = (loss_old - loss_new).data[0]
+    def accept(self, loss_new: torch.Tensor, loss_old: torch.Tensor) -> float:
+        loss_delta = (loss_old - loss_new).item()
         try:
             proba_accept = 1 / (1 + math.exp(-loss_delta / (self.flip_ratio * 1)))
         except OverflowError:

@@ -4,10 +4,10 @@ import random
 
 import torch.nn as nn
 
-from layers import compile_inference
+from utils.layers import compile_inference, binarize_model
 from trainer.mcmc import TrainerMCMC
 from trainer.trainer import Trainer
-from utils import named_parameters_binary
+from utils.binary_param import named_parameters_binary
 
 
 def clone_model(model: nn.Module) -> nn.Module:
@@ -22,6 +22,7 @@ def clone_model(model: nn.Module) -> nn.Module:
 class ParallelTempering(Trainer):
     def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str, trainer_cls=TrainerMCMC,
                  n_chains=5, **kwargs):
+        model = binarize_model(model)
         compile_inference(model)
         super().__init__(model=model, criterion=criterion, dataset_name=dataset_name, **kwargs)
         self.monitor.log(f"Parallel tempering chain trainer: {trainer_cls.__name__}")
@@ -50,11 +51,11 @@ class ParallelTempering(Trainer):
         prev_loss = best_loss
         for trainer_prev, trainer in zip(self.trainers[:-1], self.trainers[1:]):
             outputs, loss = trainer.train_batch(images, labels)
-            if loss.data[0] < best_loss.data[0]:
+            if loss.item() < best_loss.item():
                 best_loss = loss
                 best_outputs = outputs
                 self.model = trainer.model
-            energy_diff = loss.data[0] - prev_loss.data[0]
+            energy_diff = loss.item() - prev_loss.item()
             temperature_curr = self.to_temperature(trainer.flip_ratio)
             temperature_prev = self.to_temperature(trainer_prev.flip_ratio)
             proba_swap = math.exp(energy_diff / (1 / temperature_curr - 1 / temperature_prev))

@@ -1,17 +1,13 @@
+import os
+
 import torch
 import torch.nn as nn
 import torch.utils.data
 
-from layers import ScaleLayer, BinaryDecorator, BinaryDecoratorSoft, binarize_model
 from trainer import *
-from utils import AdamCustomDecay
+from utils.layers import ScaleLayer
 
-linear_features = {
-    "MNIST": (28 * 28, 10),
-    "MNIST56": (5 * 5, 2),
-    "MNIST56FullSize": (28 * 28, 2),
-    "CIFAR10": (3 * 32 * 32, 10),
-}
+os.environ['FULL_FORWARD_PASS_SIZE'] = '10000'
 
 
 class NetBinary(nn.Module):
@@ -37,65 +33,59 @@ class NetBinary(nn.Module):
         return x
 
 
-def train_gradient(model: nn.Module = None, is_binary=True, dataset_name="MNIST"):
-    if model is None:
-        model = NetBinary(fc_sizes=linear_features[dataset_name])
+def train_gradient_full_precision(model: nn.Module, dataset_name="MNIST"):
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-2, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10,
                                                            threshold=1e-3, min_lr=1e-4)
-    if is_binary:
-        model = binarize_model(model, binarizer=BinaryDecorator)
-        trainer_cls = TrainerGradBinary
-    else:
-        trainer_cls = TrainerGradFullPrecision
-    trainer = trainer_cls(model,
+    trainer = TrainerGrad(model,
                           criterion=nn.CrossEntropyLoss(),
                           dataset_name=dataset_name,
                           optimizer=optimizer,
-                          scheduler=scheduler,
-                          monitor_kwargs=dict(watch_parameters=True))
-    trainer.train(n_epoch=50, save=False, with_mutual_info=False)
+                          scheduler=scheduler)
+    trainer.train(n_epoch=100)
     return model
 
 
-def train_binsoft(model: nn.Module = None, dataset_name="MNIST"):
-    if model is None:
-        model = NetBinary(fc_sizes=linear_features[dataset_name])
+def train_gradient_binary(model: nn.Module, dataset_name="MNIST"):
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-2, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10,
                                                            threshold=1e-3, min_lr=1e-4)
-    model = binarize_model(model, binarizer=BinaryDecoratorSoft)
+    trainer = TrainerGradBinary(model,
+                                criterion=nn.CrossEntropyLoss(),
+                                dataset_name=dataset_name,
+                                optimizer=optimizer,
+                                scheduler=scheduler)
+    trainer.train(n_epoch=100)
+    return model
+
+
+def train_binsoft(model: nn.Module, dataset_name="MNIST"):
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10,
+                                                           threshold=1e-3, min_lr=1e-4)
     trainer = TrainerGradBinarySoft(model,
                                     criterion=nn.CrossEntropyLoss(),
                                     dataset_name=dataset_name,
                                     optimizer=optimizer,
                                     scheduler=scheduler,
-                                    hardness_scheduler=HardnessScheduler(model=model, step_size=5),
-                                    monitor_kwargs=dict(watch_parameters=True))
-    trainer.train(n_epoch=100, save=False, with_mutual_info=False)
+                                    hardness_scheduler=HardnessScheduler(model=model, step_size=5))
+    trainer.train(n_epoch=100)
     return model
 
 
-def train_mcmc(model: nn.Module = None, dataset_name="MNIST"):
-    if model is None:
-        model = NetBinary(fc_sizes=linear_features[dataset_name], batch_norm=False)
-    model = binarize_model(model)
+def train_mcmc(model: nn.Module, dataset_name="MNIST"):
     trainer = TrainerMCMCGibbs(model,
                                criterion=nn.CrossEntropyLoss(),
                                dataset_name=dataset_name,
-                               flip_ratio=0.01,
-                               monitor_kwargs=dict(watch_parameters=False))
-    trainer.train(n_epoch=500, save=False, with_mutual_info=False, epoch_update_step=1)
+                               flip_ratio=0.01)
+    trainer.train(n_epoch=100)
     return model
 
 
-def train_tempering(model: nn.Module = None, dataset_name="MNIST"):
-    if model is None:
-        model = NetBinary(fc_sizes=linear_features[dataset_name], batch_norm=False)
-    model = binarize_model(model)
+def train_tempering(model: nn.Module, dataset_name="MNIST"):
     trainer = ParallelTempering(model, criterion=nn.CrossEntropyLoss(), dataset_name=dataset_name,
                                 trainer_cls=TrainerMCMCGibbs, n_chains=5, monitor_kwargs=dict(watch_parameters=False))
-    trainer.train(n_epoch=100, save=False, with_mutual_info=False, epoch_update_step=1)
+    trainer.train(n_epoch=100)
     return model
 
 
@@ -112,5 +102,6 @@ if __name__ == '__main__':
     # model = train_gradient(NetBinary(fc_sizes=(784, 10), batch_norm=True), is_binary=True, dataset_name="MNIST")
     # model = train_mcmc(model=None, dataset_name="MNIST56FullSize")
     # train_tempering(NetBinary(fc_sizes=(784, 10), batch_norm=False, scale_layer=False), dataset_name="MNIST")
-    # train_mcmc(NetBinary(fc_sizes=(25, 2), batch_norm=False, scale_layer=False), dataset_name="MNIST56")
-    train_binsoft(dataset_name="MNIST")
+    # train_mcmc(NetBinary(fc_sizes=(784, 10), batch_norm=False, scale_layer=False), dataset_name="MNIST")
+    train_mcmc(NetBinary(fc_sizes=(25, 2), batch_norm=False, scale_layer=False), dataset_name="MNIST56")
+    # train_binsoft(NetBinary((784, 10), batch_norm=False), dataset_name="MNIST")

@@ -1,62 +1,46 @@
-import time
+import os
+import subprocess
 from collections import UserDict
-from typing import Callable
+from typing import Callable, Optional
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.utils.data
+from sklearn.metrics import confusion_matrix, pairwise
 
-from monitor.accuracy import calc_accuracy
-from monitor.autocorrelation import Autocorrelation
-from monitor.batch_timer import timer, Schedule
-from monitor.graph import GraphMCMC
-from monitor.mutual_info.mutual_info import MutualInfoKMeans
+from monitor.accuracy import calc_accuracy, full_forward_pass, Accuracy, AccuracyArgmax
+from monitor.batch_timer import timer, ScheduleStep
+from monitor.mutual_info import MutualInfoKMeans, MutualInfoNeuralEstimation
 from monitor.var_online import VarianceOnline
 from monitor.viz import VisdomMighty
-from utils import named_parameters_binary, parameters_binary, MNISTSmall, get_data_loader, factors_root, is_binary
-
-
-def timer_profile(func):
-    def wrapped(*args, **kwargs):
-        start = time.time()
-        res = func(*args, **kwargs)
-        elapsed = time.time() - start
-        elapsed /= len(args[1])  # fps
-        elapsed *= 1e3
-        print(f"{func.__name__} {elapsed} ms")
-        return res
-
-    return wrapped
+from utils.domain import MonitorLevel
+from utils.normalize import get_normalize_inverse
 
 
 class ParamRecord(object):
-    def __init__(self, param: nn.Parameter, monitor=False):
+    def __init__(self, param: nn.Parameter, monitor_level: MonitorLevel = MonitorLevel.DISABLED):
         self.param = param
-        self.is_monitored = monitor
-        self.variance = VarianceOnline(tensor=param.data.cpu(), is_active=self.is_monitored)
-        self.grad_variance = VarianceOnline(is_active=self.is_monitored)
-        if self.is_monitored:
-            self.prev_sign = param.data.cpu().clone()  # clone is faster
-            self.initial_data = param.data.clone()
-            self.initial_norm = self.initial_data.norm(p=2)
+        self.monitor_level = monitor_level
+        self.grad_variance = VarianceOnline()
+        self.prev_sign = None
+        self.initial_data = None
+        self.initial_norm = param.data.norm(p=2).item()
 
-    def tstat(self) -> torch.FloatTensor:
-        """
-        :return: t-statistics of the parameters history
-        """
-        assert self.is_monitored, "Parameter is not monitored!"
-        mean, std = self.variance.get_mean_std()
-        tstat = mean.abs() / std
-        isnan = std == 0
-        if isnan.all():
-            tstat.fill_(0)
-        else:
-            tstat_nonnan = tstat[~isnan]
-            tstat_max = tstat_nonnan.mean() + 2 * tstat_nonnan.std()
-            tstat_nonnan.clamp_(max=tstat_max)
-            tstat[~isnan] = tstat_nonnan
-            tstat[isnan] = tstat_max
-        return tstat
+    def update_signs(self) -> float:
+        param = self.param
+        new_data = param.data.cpu()
+        if new_data is param.data:
+            new_data = new_data.clone()
+        if self.prev_sign is None:
+            self.prev_sign = new_data
+        sign_flips = (new_data * self.prev_sign < 0).sum().item()
+        self.prev_sign = new_data
+        return sign_flips
+
+    def update_grad_variance(self):
+        if self.param.grad is not None:
+            self.grad_variance.update(self.param.grad.data.cpu())
 
 
 class ParamsDict(UserDict):
@@ -67,20 +51,14 @@ class ParamsDict(UserDict):
 
     def batch_finished(self):
         self.n_updates += 1
-        for param_record in self.values_monitored():
-            param = param_record.param
-            new_data = param.data.cpu()
-            if new_data is param.data:
-                new_data = new_data.clone()
-            self.sign_flips += torch.sum((new_data * param_record.prev_sign) < 0)
-            param_record.prev_sign = new_data
-            param_record.variance.update(new_data.sign() if is_binary(param) else new_data)
+        for param_record in filter(lambda precord: precord.monitor_level.value >= MonitorLevel.SIGNAL_TO_NOISE.value,
+                                   self.values()):
+            param_record.update_grad_variance()
+        for param_record in filter(lambda precord: precord.monitor_level is MonitorLevel.FULL, self.values()):
+            self.sign_flips += param_record.update_signs()
 
     def plot_sign_flips(self, viz: VisdomMighty):
-        if self.count_monitored() == 0:
-            # haven't registered any monitored params yet
-            return
-        viz.line_update(y=self.sign_flips / self.n_updates, win='sign', opts=dict(
+        viz.line_update(y=self.sign_flips / self.n_updates, opts=dict(
             xlabel='Epoch',
             ylabel='Sign flips',
             title="Sign flips after optimizer.step()",
@@ -88,66 +66,62 @@ class ParamsDict(UserDict):
         self.sign_flips = 0
         self.n_updates = 0
 
-    def items_monitored(self):
-        def pass_monitored(pair):
-            name, param_record = pair
-            return param_record.is_monitored
-
-        return filter(pass_monitored, self.items())
-
-    def items_monitored_dict(self):
-        return {name: param for name, param in self.items_monitored()}
-
-    def values_monitored(self):
-        for name, param_record in self.items_monitored():
-            yield param_record
-
-    def count_monitored(self):
-        return len(list(self.values_monitored()))
-
 
 class Monitor(object):
-    # todo: feature maps
+    n_classes_format_ytickstep_1 = 10
 
-    def __init__(self, trainer, is_active=True, watch_parameters=False):
+    def __init__(self, test_loader: torch.utils.data.DataLoader, accuracy_measure: Accuracy):
         """
-        :param trainer: Trainer instance
+        :param test_loader: dataloader to test model performance at each epoch_finished() call
+        :param accuracy_measure: argmax or centroid embeddings accuracy measure
         """
-        self.is_active = is_active
-        self.watch_parameters = watch_parameters
         self.timer = timer
-        self.timer.init(batches_in_epoch=len(trainer.train_loader))
-        self.viz = VisdomMighty(env=f"{time.strftime('%Y-%b-%d')} "
-                                    f"{trainer.dataset_name} "
-                                    f"{trainer.__class__.__name__}", timer=self.timer, send=is_active)
-        self.test_loader = get_data_loader(dataset=trainer.dataset_name, train=False)
+        self.test_loader = test_loader
+        self.viz = None
+        self.normalize_inverse = None
+        self._advanced_monitoring_level = MonitorLevel.DISABLED  # memory consuming
+        if self.test_loader is not None:
+            self.normalize_inverse = get_normalize_inverse(self.test_loader.dataset.transform)
+        self.accuracy_measure = accuracy_measure
         self.param_records = ParamsDict()
-        self.mutual_info = MutualInfoKMeans(estimate_size=int(1e3), compression_range=(0.5, 0.999))
+        self.mutual_info = MutualInfoKMeans(debug=False)
         self.functions = []
-        self.log_model(trainer.model)
-        self.log_binary_ratio(trainer.model)
-        self.log_trainer(trainer)
 
-    def log_trainer(self, trainer):
-        self.log(f"Criterion: {trainer.criterion}")
-        optimizer = getattr(trainer, 'optimizer', None)
-        if optimizer is not None:
-            optimizer_str = f"Optimizer {optimizer.__class__.__name__}:"
-            for group_id, group in enumerate(optimizer.param_groups):
-                optimizer_str += f"\n\tgroup {group_id}: lr={group['lr']}, weight_decay={group['weight_decay']}"
-            self.log(optimizer_str)
+    @property
+    def is_active(self):
+        return self.viz is not None
 
-    def log_binary_ratio(self,  model: nn.Module):
-        n_params_full = sum(map(torch.numel, model.parameters()))
-        n_params_binary = sum(map(torch.numel, parameters_binary(model)))
-        self.log(f"Parameters binary={n_params_binary} / total={n_params_full}"
-                 f" = {100. * n_params_binary / n_params_full:.2f} %")
+    def advanced_monitoring(self, level: MonitorLevel = MonitorLevel.DISABLED):
+        self._advanced_monitoring_level = level
+        for param_record in self.param_records.values():
+            param_record.monitor_level = level
+
+    def open(self, env_name: str):
+        """
+        :param env_name: Visdom environment name
+        """
+        self.viz = VisdomMighty(env=env_name)
+        self.viz.prepare()
 
     def log_model(self, model: nn.Module, space='-'):
+        lines = []
         for line in repr(model).splitlines():
             n_spaces = len(line) - len(line.lstrip())
             line = space * n_spaces + line
-            self.viz.text(line, win='log', append=self.viz.win_exists('log'))
+            lines.append(line)
+        lines = '<br>'.join(lines)
+        self.log(lines)
+
+    def log_self(self):
+        self.log(f"{self.__class__.__name__}(accuracy_measure={self.accuracy_measure.__class__.__name__}, "
+                 f"level={self._advanced_monitoring_level})")
+        self.log(repr(self.mutual_info))
+        self.log(f"FULL_FORWARD_PASS_SIZE: {os.environ.get('FULL_FORWARD_PASS_SIZE', '(all samples)')}")
+        self.log(f"BATCH_SIZE: {os.environ.get('BATCH_SIZE', '(default)')}")
+        self.log(f"Batches in epoch: {self.timer.batches_in_epoch}")
+        self.log(f"Start epoch: {self.timer.epoch}")
+        commit = subprocess.run(['git', 'rev-parse', 'HEAD'], stdout=subprocess.PIPE, universal_newlines=True)
+        self.log(f"Git commit: {commit.stdout}")
 
     def log(self, text: str):
         self.viz.log(text)
@@ -156,132 +130,189 @@ class Monitor(object):
         self.param_records.batch_finished()
         self.timer.tick()
         if self.timer.epoch == 0:
-            self.mutual_info.update(model)
-            self.mutual_info.plot(self.viz)
+            self.mutual_info.force_update(model)
+            self.update_mutual_info()
 
-    def start_training(self, model: nn.Module):
-        self.mutual_info.update(model)
-        self.mutual_info.plot(self.viz)
-
-    def update_loss(self, loss: float, mode='batch'):
-        self.viz.line_update(loss, win=f'loss', opts=dict(
+    def update_loss(self, loss: Optional[torch.Tensor], mode='batch'):
+        if loss is None:
+            return
+        self.viz.line_update(loss.item(), opts=dict(
             xlabel='Epoch',
             ylabel='Loss',
             title=f'Loss'
         ), name=mode)
 
     def update_accuracy(self, accuracy: float, mode='batch'):
-        self.viz.line_update(accuracy, win=f'accuracy', opts=dict(
+        self.viz.line_update(accuracy, opts=dict(
             xlabel='Epoch',
             ylabel='Accuracy',
             title=f'Accuracy'
         ), name=mode)
 
-    @Schedule(epoch_update=1)
-    def update_accuracy_test(self, model: nn.Module):
-        self.update_accuracy(accuracy=calc_accuracy(model, self.test_loader), mode='full test')
+    def clear(self):
+        self.viz.close()
+        self.viz.prepare()
 
-    def register_func(self, func: Callable, opts: dict = None):
-        self.functions.append((func, opts))
+    def register_func(self, *func: Callable):
+        self.functions.extend(func)
 
     def update_distribution(self):
         for name, param_record in self.param_records.items():
-            param = param_record.param
-            if param.numel() == 1:
-                self.viz.line_update(y=param.data[0], win=name, opts=dict(
+            param_data = param_record.param.data.cpu()
+            if param_data.numel() == 1:
+                self.viz.line_update(y=param_data.item(), opts=dict(
                     xlabel='Epoch',
                     ylabel='Value',
                     title=name,
                 ))
             else:
-                self.viz.histogram(X=param.data.cpu().view(-1), win=name, opts=dict(
+                self.viz.histogram(X=param_data.flatten(), win=name, opts=dict(
                     xlabel='Param norm',
                     ylabel='# bins (distribution)',
                     title=name,
                 ))
 
-    def update_gradient_mean_std(self):
-        for name, param_record in self.param_records.items_monitored():
+    def update_gradient_signal_to_noise_ratio(self):
+        snr = []
+        legend = []
+        for name, param_record in self.param_records.items():
             param = param_record.param
             if param.grad is None:
                 continue
-            param_record.grad_variance.update(param.grad.data.cpu())
             mean, std = param_record.grad_variance.get_mean_std()
-            param_norm = param.data.norm(p=2)
+            param_record.grad_variance.reset()
+            param_norm = param.data.norm(p=2).cpu()
+
+            # matrix Frobenius norm is L2 norm
             mean = mean.norm(p=2) / param_norm
-            std = std.mean() / param_norm
-            self.viz.line_update(y=[mean, std], win=f"grad_mean_std_{name}", opts=dict(
-                xlabel='Epoch',
-                ylabel='Normalized Mean and STD',
-                title=name,
-                legend=['||Mean(∇Wi)||', 'STD(∇Wi)'],
-                xtype='log',
-                ytype='log',
+            std = std.norm(p=2) / param_norm
+
+            snr.append(mean / std)
+            legend.append(name)
+            if self._advanced_monitoring_level is MonitorLevel.FULL:
+                self.viz.line_update(y=[mean, std], opts=dict(
+                    xlabel='Epoch',
+                    ylabel='Normalized Mean and STD',
+                    title=f'Gradient Mean and STD: {name}',
+                    legend=['||Mean(∇Wi)||', '||STD(∇Wi)||'],
+                    xtype='log',
+                    ytype='log',
+                ))
+        self.viz.line_update(y=snr, opts=dict(
+            xlabel='Epoch',
+            ylabel='||Mean(∇Wi)|| / ||STD(∇Wi)||',
+            title='Signal to Noise Ratio',
+            legend=legend,
+            xtype='log',
+            ytype='log',
+        ))
+
+    def plot_accuracy_confusion_matrix(self, labels_true, labels_predicted, mode):
+        self.update_accuracy(accuracy=calc_accuracy(labels_true, labels_predicted), mode=mode)
+        title = f"Confusion matrix '{mode}'"
+        if len(labels_true.unique()) <= self.n_classes_format_ytickstep_1:
+            # don't plot huge matrix
+            confusion = confusion_matrix(labels_true, labels_predicted)
+            self.viz.heatmap(confusion, win=title, opts=dict(
+                title=title,
+                xlabel='Predicted label',
+                ylabel='True label',
             ))
 
-    def update_timings(self):
-        self.viz.text(f'Batch duration: {self.timer.batch_duration(): .2e} sec', win='status')
-        self.viz.text(f'Epoch duration: {self.timer.epoch_duration(): .2e} sec', win='status', append=True)
-        self.viz.text(f'Training time: {self.timer.training_time()}', win='status', append=True)
+    def update_accuracy_epoch(self, model: nn.Module, outputs_train, labels_train):
+        outputs_test, labels_test = full_forward_pass(model, loader=self.test_loader)
+        self.plot_accuracy_confusion_matrix(labels_true=labels_train,
+                                            labels_predicted=self.accuracy_measure.predict(outputs_train),
+                                            mode='full train')
+        self.plot_accuracy_confusion_matrix(labels_true=labels_test,
+                                            labels_predicted=self.accuracy_measure.predict(outputs_test),
+                                            mode='full test')
 
-    def epoch_finished(self, model: nn.Module):
-        self.update_accuracy_test(model)
-        self.update_distribution()
+    def plot_mask(self, model: nn.Module, mask_trainer, image, label, win_suffix=''):
+        def forward_probability(image_example):
+            with torch.no_grad():
+                outputs = model(image_example.unsqueeze(dim=0))
+            proba = mask_trainer.get_probability(outputs=outputs, label=label)
+            return proba
+
+        mask, loss_trace, image_perturbed = mask_trainer.train_mask(model=model, image=image, label_true=label)
+        proba_original = forward_probability(image)
+        proba_perturbed = forward_probability(image_perturbed)
+        image, mask, image_perturbed = image.cpu(), mask.cpu(), image_perturbed.cpu()
+        image = self.normalize_inverse(image)
+        image_perturbed = self.normalize_inverse(image_perturbed)
+        image_masked = mask * image
+        images_stacked = torch.stack([image, mask, image_masked, image_perturbed], dim=0)
+        images_stacked.clamp_(0, 1)
+        self.viz.images(images_stacked, nrow=len(images_stacked), win=f'masked images {win_suffix}', opts=dict(
+            title=f"Masked image decreases neuron '{label}' probability {proba_original:.4f} -> {proba_perturbed:.4f}"
+        ))
+        self.viz.line(Y=loss_trace, X=np.arange(1, len(loss_trace) + 1), win=f'mask loss {win_suffix}', opts=dict(
+            xlabel='Iteration',
+            title='Mask loss'
+        ))
+
+    def update_mutual_info(self):
+        # for layer_name, estimated_accuracy in self.mutual_info.estimate_accuracy().items():
+        #     self.update_accuracy(accuracy=estimated_accuracy, mode=layer_name)
         self.mutual_info.plot(self.viz)
-        for func_id, (func, opts) in enumerate(self.functions):
-            self.viz.line_update(y=func(), win=f"func_{func_id}", opts=opts)
-        # statistics below require monitored parameters
-        self.param_records.plot_sign_flips(self.viz)
-        self.update_gradient_mean_std()
-        self.update_heatmap_history(model)
-        self.update_initial_difference()
+
+    def epoch_finished(self, model: nn.Module, outputs_full, labels_full):
+        self.update_accuracy_epoch(model, outputs_train=outputs_full, labels_train=labels_full)
+        # self.update_distribution()
+        self.update_mutual_info()
+        for monitored_function in self.functions:
+            monitored_function(self.viz)
         self.update_grad_norm()
+        if not isinstance(self.accuracy_measure, AccuracyArgmax):
+            self.update_sparsity(outputs_full, mode='full train')
+            self.update_density(outputs_full, mode='full train')
+            self.activations_heatmap(outputs_full, labels_full)
+            self.firing_frequency(outputs_full)
+        if self._advanced_monitoring_level.value >= MonitorLevel.SIGNAL_TO_NOISE.value:
+            self.update_gradient_signal_to_noise_ratio()
+        if self._advanced_monitoring_level is MonitorLevel.FULL:
+            self.param_records.plot_sign_flips(self.viz)
+            self.update_initial_difference()
 
     def register_layer(self, layer: nn.Module, prefix: str):
         self.mutual_info.register(layer, name=prefix)
         for name, param in layer.named_parameters(prefix=prefix):
-            self.param_records[name] = ParamRecord(param, monitor=self.watch_parameters)
+            if param.requires_grad and not name.endswith('.bias'):
+                self.param_records[name] = ParamRecord(param, monitor_level=self._advanced_monitoring_level)
 
-    def update_heatmap_history(self, model: nn.Module, by_dim=False):
-        """
-        :param model: current model
-        :param by_dim: use hitmap_by_dim for the last layer's weights
-        """
-        def heatmap(tensor: torch.FloatTensor, win: str):
-            self.viz.heatmap(X=tensor, win=win, opts=dict(
-                colormap='Jet',
-                title=win,
-                xlabel='input dimension',
-                ylabel='output dimension',
-                ytickstep=1,
-            ))
+    def update_sparsity(self, outputs, mode: str):
+        outputs = outputs.detach()
+        sparsity = outputs.norm(p=1, dim=1).mean() / outputs.shape[1]
+        self.viz.line_update(y=sparsity.cpu(), opts=dict(
+            xlabel='Epoch',
+            ylabel='L1 norm / size',
+            title='Output sparsity',
+        ), name=mode)
 
-        def heatmap_by_dim(tensor: torch.FloatTensor, win: str):
-            for dim, x_dim in enumerate(tensor):
-                factors = factors_root(x_dim.shape[0])
-                x_dim = x_dim.view(factors)
-                heatmap(x_dim, win=f'{win}: dim {dim}')
-
-        names_backward = list(name for name, _ in model.named_parameters())[::-1]
-        name_last = None
-        for name in names_backward:
-            if name in self.param_records:
-                name_last = name
-                break
-
-        for name, param_record in self.param_records.items_monitored():
-            heatmap_func = heatmap_by_dim if by_dim and name == name_last else heatmap
-            heatmap_func(tensor=param_record.tstat(), win=f'Heatmap {name} t-statistics')
+    def update_density(self, outputs, mode: str):
+        outputs = outputs.detach()
+        mean = outputs.mean(dim=0)
+        var = outputs.var(dim=0)
+        density = 1 / (var / (mean * mean + 1e-7) + 1)
+        density = density.mean()
+        self.viz.line_update(y=density.cpu(), opts=dict(
+            xlabel='Epoch',
+            ylabel='(mean / std) ^ 2',
+            title='Output density',
+        ), name=mode)
 
     def update_initial_difference(self):
         legend = []
         dp_normed = []
-        for name, param_record in self.param_records.items_monitored():
+        for name, param_record in self.param_records.items():
             legend.append(name)
-            dp = param_record.param.data - param_record.initial_data
+            if param_record.initial_data is None:
+                param_record.initial_data = param_record.param.data.cpu().clone()
+            dp = param_record.param.data.cpu() - param_record.initial_data
             dp = dp.norm(p=2) / param_record.initial_norm
             dp_normed.append(dp)
-        self.viz.line_update(y=dp_normed, win='w_initial', opts=dict(
+        self.viz.line_update(y=dp_normed, opts=dict(
             xlabel='Epoch',
             ylabel='||W - W_initial|| / ||W_initial||',
             title='How far the current weights are from the initial?',
@@ -290,35 +321,75 @@ class Monitor(object):
 
     def update_grad_norm(self):
         grad_norms = []
-        for name, param_record in self.param_records.items_monitored():
+        legend = []
+        for name, param_record in self.param_records.items():
             grad = param_record.param.grad
             if grad is not None:
-                grad_norms.append(grad.data.norm(p=2))
+                grad_norms.append(grad.norm(p=2).cpu())
+                legend.append(name)
         if len(grad_norms) > 0:
-            norm_mean = sum(grad_norms) / len(grad_norms)
-            self.viz.line_update(y=norm_mean, win='grad_norm', opts=dict(
+            self.viz.line_update(y=grad_norms, opts=dict(
                 xlabel='Epoch',
                 ylabel='Gradient norm, L2',
-                title='Average grad norm of all params',
+                title='Gradient norm',
+                legend=legend,
             ))
 
+    def activations_heatmap(self, outputs: torch.Tensor, labels: torch.Tensor):
+        """
+        We'd like the last layer activations heatmap to be different for each corresponding label.
+        :param outputs: the last layer activations
+        :param labels: corresponding labels
+        """
 
-class MonitorMCMC(Monitor):
+        def compute_manhattan_dist(tensor: torch.FloatTensor) -> float:
+            l1_dist = pairwise.manhattan_distances(tensor.cpu())
+            upper_triangle_idx = np.triu_indices_from(l1_dist, k=1)
+            l1_dist = l1_dist[upper_triangle_idx].mean()
+            return l1_dist
 
-    def __init__(self, trainer, is_active=True, watch_parameters=False):
-        super().__init__(trainer, is_active=is_active, watch_parameters=watch_parameters)
-        self.autocorrelation = Autocorrelation(n_lags=self.timer.batches_in_epoch,
-                                               with_autocorrelation=isinstance(trainer.train_loader.dataset,
-                                                                               MNISTSmall))
-        named_param_shapes = iter((name, param.shape) for name, param in named_parameters_binary(trainer.model))
-        self.graph_mcmc = GraphMCMC(named_param_shapes=named_param_shapes, timer=self.timer,
-                                    history_heatmap=True)
+        outputs = outputs.detach()
+        class_centroids = []
+        std_centroids = []
+        label_names = []
+        for label in sorted(labels.unique()):
+            outputs_label = outputs[labels == label]
+            std_centroids.append(outputs_label.std(dim=0))
+            class_centroids.append(outputs_label.mean(dim=0))
+            label_names.append(str(label.item()))
+        win = "Last layer activations heatmap"
+        class_centroids = torch.stack(class_centroids, dim=0)
+        std_centroids = torch.stack(std_centroids, dim=0)
+        opts = dict(
+            title=f"{win}. Epoch {self.timer.epoch}",
+            xlabel='Embedding dimension',
+            ylabel='Label',
+            rownames=label_names,
+        )
+        if class_centroids.shape[0] <= self.n_classes_format_ytickstep_1:
+            opts.update(ytickstep=1)
+        self.viz.heatmap(class_centroids, win=win, opts=opts)
+        self.save_heatmap(class_centroids, win=win, opts=opts)
+        normalizer = class_centroids.norm(p=1, dim=1).mean()
+        outer_distance = compute_manhattan_dist(class_centroids) / normalizer
+        std = std_centroids.norm(p=1, dim=1).mean() / normalizer
+        self.viz.line_update(y=[outer_distance.item(), std.item()], opts=dict(
+            xlabel='Epoch',
+            ylabel='Mean pairwise distance (normalized)',
+            legend=['inter-distance', 'intra-STD'],
+            title='How much do patterns differ in L1 measure?',
+        ))
 
-    def mcmc_step(self, param_flips):
-        self.autocorrelation.add_samples(param_flips)
-        self.graph_mcmc.add_samples(param_flips)
+    @ScheduleStep(epoch_step=20)
+    def save_heatmap(self, heatmap, win, opts):
+        self.viz.heatmap(heatmap, win=f"{win}. Epoch {self.timer.epoch}", opts=opts)
 
-    def epoch_finished(self, model: nn.Module):
-        super().epoch_finished(model)
-        # self.autocorrelation.plot(self.viz)
-        # self.graph_mcmc.render(self.viz)
+    def firing_frequency(self, outputs):
+        frequency = outputs.detach().mean(dim=0)
+        frequency.unsqueeze_(dim=0)
+        title = 'Neuron firing frequency'
+        self.viz.heatmap(frequency, win=title, opts=dict(
+            title=title,
+            xlabel='Embedding dimension',
+            rownames=['Last layer'],
+        ))

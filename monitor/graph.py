@@ -9,7 +9,7 @@ import torch
 import visdom
 import math
 
-from monitor.batch_timer import Schedule, BatchTimer
+from monitor.batch_timer import ScheduleStep, BatchTimer
 
 
 class ParameterNode(object):
@@ -73,10 +73,10 @@ class GraphMCMC(object):
                                                    f"Did you forget to pass it in the constructor?"
             pnode = self.param_nodes[pflip.name]
             if pnode.idx_flipped is not None:
-                pnode.idx_flipped += pflip.get_idx_flipped().cpu().numpy()
+                pnode.idx_flipped += pflip.construct_flip().cpu().numpy()
         self.save_sample_activations(param_flips)
 
-    @Schedule(epoch_update=0, batch_update=1)
+    @ScheduleStep(epoch_step=0, batch_step=1)
     def save_sample_activations(self, param_flips: Iterable):
         """
         :param param_flips: Iterable of ParameterFLip
@@ -147,7 +147,7 @@ class GraphMCMC(object):
         else:
             return {layer_size // 2, layer_size // 2 - 1}
 
-    @Schedule(epoch_update=10)
+    @ScheduleStep(epoch_step=10)
     def render(self, viz: visdom.Visdom, render_format='svg'):
         if not self.graphviz_installed or len(self.param_nodes) == 0:
             return
