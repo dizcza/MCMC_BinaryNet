@@ -151,7 +151,7 @@ class Trainer(ABC):
             self.monitor.update_sparsity(outputs, mode='batch')
             self.monitor.update_density(outputs, mode='batch')
 
-    def train(self, n_epoch=10, epoch_update_step=1, mutual_info_layers=0):
+    def train(self, n_epoch=10, epoch_update_step=1, mutual_info_layers=1):
         """
         :param n_epoch: number of training epochs
         :param epoch_update_step: epoch step to run full evaluation

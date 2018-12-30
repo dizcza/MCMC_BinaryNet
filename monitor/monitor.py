@@ -16,6 +16,7 @@ from monitor.var_online import VarianceOnline
 from monitor.viz import VisdomMighty
 from utils.domain import MonitorLevel
 from utils.normalize import get_normalize_inverse
+from utils.common import clone_cpu
 
 
 class ParamRecord(object):
@@ -29,9 +30,7 @@ class ParamRecord(object):
 
     def update_signs(self) -> float:
         param = self.param
-        new_data = param.data.cpu()
-        if new_data is param.data:
-            new_data = new_data.clone()
+        new_data = clone_cpu(param.data)
         if self.prev_sign is None:
             self.prev_sign = new_data
         sign_flips = (new_data * self.prev_sign < 0).sum().item()

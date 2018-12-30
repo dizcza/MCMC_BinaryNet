@@ -1,4 +1,4 @@
-from collections import defaultdict, deque
+from collections import defaultdict
 from typing import Iterable
 
 import numpy as np
@@ -7,6 +7,7 @@ import visdom
 from statsmodels.tsa.stattools import acf, ccf
 
 from monitor.batch_timer import ScheduleStep
+from utils.common import clone_cpu
 
 
 class Autocorrelation(object):
@@ -19,10 +20,11 @@ class Autocorrelation(object):
         self.n_lags = n_lags
         self.with_autocorrelation = with_autocorrelation
         self.with_cross_correlation = with_cross_correlation
-        deque_length = max(100, 5 * self.n_lags)
-        self.ccf_lag0 = defaultdict(lambda: defaultdict(float))  # track mean of zero-lag cross-correlation
+        self.n_observations = max(100, 5 * self.n_lags)  # num of subsequent parameter snapshots
+        self.ccf_lag0 = {}  # track mean of zero-lag cross-correlation
         self.calls = 0
-        self.samples = defaultdict(lambda: deque(maxlen=deque_length))
+        self.calls_ccf = {}
+        self.param_history = defaultdict(list)
 
     def add_samples(self, param_flips: Iterable):
         """
@@ -30,17 +32,24 @@ class Autocorrelation(object):
         """
         if self.with_autocorrelation or self.with_cross_correlation:
             for pflip in param_flips:
-                self.samples[pflip.name].append(pflip.param.data.cpu().flatten())
+                if self.with_cross_correlation and pflip.name not in self.ccf_lag0:
+                    n_elements = pflip.param.numel()
+                    self.ccf_lag0[pflip.name] = np.zeros((n_elements, n_elements), dtype=np.float32)
+                    self.calls_ccf[pflip.name] = np.zeros((n_elements, n_elements), dtype=np.int32)
+                observations = self.param_history[pflip.name]
+                if len(observations) < self.n_observations:
+                    param_clone = clone_cpu(pflip.param.data)
+                    observations.append(param_clone)
 
     @ScheduleStep(epoch_step=1)
     def plot(self, viz: visdom.Visdom):
         self.calls += 1
 
-        for name, samples in self.samples.items():
-            acf_weights = {}
-            if len(samples) < self.n_lags:
+        for name, observations in self.param_history.items():
+            if len(observations) < self.n_lags:
                 continue
-            observations = torch.stack(tuple(samples), dim=0)
+            acf_weights = {}
+            observations = torch.stack(observations, dim=0).flatten(start_dim=1)
             observations.t_()
             observations = observations.numpy()
             active_rows_mask = list(map(np.any, np.diff(observations, axis=1)))
@@ -54,24 +63,24 @@ class Autocorrelation(object):
                 if self.with_cross_correlation:
                     for paired_row in active_rows[i+1:]:
                         ccf_lag0 = np.sum(observations[active_row] * observations[paired_row]) / ccf_normalizer
-                        ccf_old_mean = self.ccf_lag0[name][(active_row, paired_row)]
-                        self.ccf_lag0[name][(active_row, paired_row)] += (ccf_lag0 - ccf_old_mean) / self.calls
+                        ccf_old_mean = self.ccf_lag0[name][active_row, paired_row]
+                        self.calls_ccf[name][active_row, paired_row] += 1
+                        self.ccf_lag0[name][active_row, paired_row] += (ccf_lag0 - ccf_old_mean) / self.calls_ccf[name][active_row, paired_row]
 
             if len(acf_weights) > 0:
                 acf_mean = np.mean(list(acf_weights.values()), axis=0)
-                acf_title = f"Mean Autocorrelation: {name}"
-                viz.bar(X=acf_mean, win=acf_title, opts=dict(
+                viz.bar(X=acf_mean, win=f"ACF {name}", opts=dict(
                     xlabel='Lag',
                     ylabel='ACF',
-                    title=acf_title,
+                    title=f"Mean Autocorrelation: {name}",
                 ))
 
             if len(self.ccf_lag0) > 0:
-                ccf_vals = list(self.ccf_lag0[name].values())
-                viz.bar(X=ccf_vals, win='crosscorr', opts=dict(
-                    xlabel='neuron pairs (i, j)',
-                    ylabel='CCF',
-                    ytickmin=-1.,
-                    ytickmax=1.,
-                    title=f'Mean Cross-Correlation at Lag 0'
+                viz.surf(self.ccf_lag0[name], win=f'CCF {name}', opts=dict(
+                    xlabel='neuron id',
+                    ylabel='neuron id',
+                    title=f'Mean Cross-Correlation at Lag 0: {name}',
+                    colormap='Hot',
                 ))
+
+        self.param_history.clear()

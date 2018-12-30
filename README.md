@@ -23,9 +23,10 @@ Before running any experiment, make sure you've started the visdom server:
 
 ```python
 import torch.nn as nn
-from layers import binarize_model
+from utils.layers import binarize_model
 from trainer import TrainerMCMC
-class Perceptron(nn.Module):
+
+class MLP(nn.Module):
     def __init__(self):
         super().__init__()
         self.linear = nn.Linear(28**2, 10, bias=False)
@@ -35,10 +36,10 @@ class Perceptron(nn.Module):
         x = self.linear(x)
         return x
 
-model = Perceptron()
+model = MLP()
 model_binary = binarize_model(model)
 print(model_binary)
-# Perceptron(
+# MLP(
 #   (linear): [Binary]Linear(in_features=784, out_features=10, bias=False)
 # )
 
@@ -52,7 +53,7 @@ trainer.train(n_epoch=100)
 
 ## Results
 
-* Train plots. Navigate to [http://ec2-34-227-113-244.compute-1.amazonaws.com:8099](http://ec2-18-234-90-227.compute-1.amazonaws.com:8097) and choose the Environment you want (`main` env is empty).
+* Train plots. Navigate to [http://ec2-34-227-113-244.compute-1.amazonaws.com:8099](http://ec2-18-234-90-227.compute-1.amazonaws.com:8097) and choose environments with `TrainerMCMC`.
 * For your local results, go to [http://localhost:8097](http://localhost:8097)
 * JAGS simulation in _R_: [paper](MCMC/paper.pdf), [source](MCMC/mnist56_jags.R)
 * PyMC3 simulation in Python: [source](MCMC/mnist56_pymc.py)

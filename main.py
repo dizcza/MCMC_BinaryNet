@@ -78,7 +78,7 @@ def train_mcmc(model: nn.Module, dataset_name="MNIST"):
                                criterion=nn.CrossEntropyLoss(),
                                dataset_name=dataset_name,
                                flip_ratio=0.01)
-    trainer.train(n_epoch=100)
+    trainer.train(n_epoch=100, mutual_info_layers=0)
     return model
 
 

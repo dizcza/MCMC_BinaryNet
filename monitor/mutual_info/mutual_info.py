@@ -14,6 +14,7 @@ from tqdm import tqdm
 
 from monitor.batch_timer import ScheduleExp
 from utils.constants import BATCH_SIZE
+from utils.common import clone_cpu
 
 
 class LayersOrder:
@@ -132,8 +133,7 @@ class MutualInfo(ABC):
         if torch.cuda.is_available():
             image_sample = image_sample.cuda()
         with torch.no_grad():
-            o = model(image_sample)
-            print(o)
+            model(image_sample)
 
         layers_ordered = layers_order.get_layers_ordered()
         layers_ordered = list(layer for layer in layers_ordered if layer in self.layer_to_name)
@@ -161,9 +161,7 @@ class MutualInfo(ABC):
         layer_name = self.layer_to_name[module]
         if sum(map(len, self.activations[layer_name])) > self.estimate_size:
             return
-        tensor_output_clone = tensor_output.cpu()
-        if tensor_output_clone is tensor_output:
-            tensor_output_clone = tensor_output_clone.clone()
+        tensor_output_clone = clone_cpu(tensor_output)
         tensor_output_clone = tensor_output_clone.flatten(start_dim=1)
         self.activations[layer_name].append(tensor_output_clone)
 
