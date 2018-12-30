@@ -14,10 +14,14 @@ class MonitorMCMC(Monitor):
     def __init__(self, test_loader: torch.utils.data.DataLoader, accuracy_measure: Accuracy, model: nn.Module):
         super().__init__(test_loader=test_loader, accuracy_measure=accuracy_measure)
         self.autocorrelation = Autocorrelation(n_lags=self.timer.batches_in_epoch,
-                                               with_autocorrelation=isinstance(self.test_loader.dataset, DataSubset))
+                                               with_cross_correlation=isinstance(self.test_loader.dataset, DataSubset))
         named_param_shapes = iter((name, param.shape) for name, param in named_parameters_binary(model))
         self.graph_mcmc = GraphMCMC(named_param_shapes=named_param_shapes, timer=self.timer,
                                     history_heatmap=True)
+
+    def log_self(self):
+        super().log_self()
+        self.log(repr(self.autocorrelation))
 
     def mcmc_step(self, param_flips):
         self.autocorrelation.add_samples(param_flips)
