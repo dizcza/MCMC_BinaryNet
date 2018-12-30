@@ -1,6 +1,5 @@
 import math
 import random
-from typing import List
 
 import torch
 import torch.nn as nn
@@ -15,7 +14,7 @@ from utils.common import get_data_loader
 
 
 class ParameterFlip(object):
-    def __init__(self, name: str, param: nn.Parameter, source: List[int], sink: List[int]):
+    def __init__(self, name: str, param: nn.Parameter, source: torch.LongTensor, sink: torch.LongTensor):
         """
         :param name: (sink) parameter's name
         :param param: nn.Parameter
@@ -25,27 +24,26 @@ class ParameterFlip(object):
         assert param.ndimension() == 2, "For now, only nn.Linear is supported"
         self.name = name
         self.param = param
-        self.source = torch.as_tensor(source, dtype=torch.int64, device=self.param.device)
-        self.sink = torch.as_tensor(sink, dtype=torch.int64, device=self.param.device).unsqueeze(dim=1)
-
-    @property
-    def source_expanded(self):
-        return self.source.expand(len(self.sink), -1)
+        self.source = source
+        self.sink = sink
+        self.is_flipped = False
 
     def construct_flip(self) -> torch.ByteTensor:
         idx_connection_flip = torch.ByteTensor(self.param.data.shape).fill_(0)
-        idx_connection_flip[self.sink, self.source_expanded] = 1
+        idx_connection_flip[self.sink, self.source] = 1
         return idx_connection_flip
 
     def flip(self):
-        self.param[self.sink, self.source_expanded] *= -1
+        self.param[self.sink, self.source] *= -1
+        self.is_flipped = not self.is_flipped
 
     def restore(self):
-        self.flip()
+        if self.is_flipped:
+            self.flip()
 
 
 class ParameterFlipCached(ParameterFlip):
-    def __init__(self, name: str, param: nn.Parameter, source: List[int], sink: List[int]):
+    def __init__(self, name: str, param: nn.Parameter, source: torch.LongTensor, sink: torch.LongTensor):
         """
         :param name: (sink) parameter's name
         :param param: nn.Parameter
@@ -57,6 +55,7 @@ class ParameterFlipCached(ParameterFlip):
 
     def restore(self):
         self.param.data = self.data_backup
+        self.is_flipped = False
 
 
 class TrainerMCMC(Trainer):
@@ -85,8 +84,8 @@ class TrainerMCMC(Trainer):
         else:
             return self.accepted_count / self.update_calls
 
-    def sample_neurons(self, size) -> List[int]:
-        return random.sample(range(size), k=math.ceil(size * self.flip_ratio))
+    def neurons_to_flip(self, size: int) -> int:
+        return math.ceil(size * self.flip_ratio)
 
     def accept(self, loss_new: torch.Tensor, loss_old: torch.Tensor) -> float:
         loss_delta = (loss_new - loss_old).item()
@@ -104,9 +103,12 @@ class TrainerMCMC(Trainer):
         source = None
         for name, param in named_params:
             size_output, size_input = param.data.shape
+            sink = torch.randint(low=0, high=size_output, size=(self.neurons_to_flip(size_output), 1),
+                                 device=param.device)
             if source is None:
-                source = self.sample_neurons(size_input)
-            sink = self.sample_neurons(size_output)
+                source = torch.randint(low=0, high=size_input,
+                                       size=(sink.shape[0], self.neurons_to_flip(size_input)),
+                                       device=param.device)
             pflip = ParameterFlipCached(name, param, source, sink)
             param_flips.append(pflip)
             source = sink
