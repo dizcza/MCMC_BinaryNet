@@ -6,11 +6,12 @@ import torch.nn as nn
 import torch.utils.data
 import torch.utils.data
 
-from utils.layers import compile_inference, binarize_model
+from loss import LossFixedPattern
 from monitor.monitor_mcmc import MonitorMCMC
 from trainer.trainer import Trainer
 from utils.binary_param import named_parameters_binary
 from utils.common import get_data_loader
+from utils.layers import compile_inference, binarize_model
 
 
 class ParameterFlip(object):
@@ -151,6 +152,20 @@ class TrainerMCMC(Trainer):
             ))
 
         self.monitor.register_func(acceptance_ratio)
+
+        if isinstance(self.criterion, LossFixedPattern):
+            def show_fixed_patterns(viz):
+                labels = sorted(self.criterion.patterns.keys())
+                patterns = [self.criterion.patterns[label] for label in labels]
+                patterns = torch.stack(patterns, dim=0).cpu()
+                title = 'Fixed target patterns'
+                viz.heatmap(patterns, win=title, opts=dict(
+                    xlabel='Embedding dimension',
+                    ylabel='Label',
+                    title=title,
+                ))
+
+            self.monitor.register_func(show_fixed_patterns)
 
 
 class TrainerMCMCTree(TrainerMCMC):

@@ -25,7 +25,6 @@ class ParallelTempering(Trainer):
         model = binarize_model(model)
         compile_inference(model)
         super().__init__(model=model, criterion=criterion, dataset_name=dataset_name, **kwargs)
-        self.monitor.log(f"Parallel tempering chain trainer: {trainer_cls.__name__}")
         flip_min = 0.001
         flip_max = 0.9
         temperature_multiplier = math.pow(flip_max / flip_min, 1 / (n_chains - 1))
@@ -35,12 +34,14 @@ class ParallelTempering(Trainer):
             flip_ratio = flip_min * temperature_multiplier ** trainer_id
             flip_ratio_chains.append(flip_ratio)
             trainer = trainer_cls(model=model, criterion=self.criterion,
-                                  dataset_name=self.dataset_name, flip_ratio=flip_ratio,
-                                  monitor_kwargs=dict(is_active=False, watch_parameters=False))
+                                  dataset_name=self.dataset_name, flip_ratio=flip_ratio)
             self.trainers.append(trainer)
             model = clone_model(model)
-        self.monitor.log(f"Started {n_chains} chains with flip ratios (temperatures between 0 and 1): "
-                         f"{flip_ratio_chains}")
+
+    def log_trainer(self):
+        super().log_trainer()
+        self.monitor.log(f"Started {len(self.trainers)} {self.trainers[0].__class__.__name__} chains with flip ratios "
+                         f"(temperatures between 0 and 1): {(trainer.flip_ratio for trainer in self.trainers)}")
 
     @staticmethod
     def to_temperature(flip_ratio):
