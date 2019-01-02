@@ -154,7 +154,7 @@ def binarize_model(model: nn.Module, drop_layers=(nn.ReLU, nn.PReLU), binarizer=
     :return: model with linear and conv layers wrapped in BinaryDecorator
     """
     if isinstance(model, BinaryDecorator):
-        print("Layer is already binarized.")
+        print(f"{model.__class__.__name__} is already binarized.")
         return model
     for name, child in list(model.named_children()):
         if isinstance(child, drop_layers):

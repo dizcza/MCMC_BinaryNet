@@ -19,18 +19,25 @@ class TemperatureScheduler:
     Flip ratio (temperature) scheduler.
     """
 
-    def __init__(self, temperature_init=0.05, step_size=10, gamma_temperature=0.5, min_temperature=1e-4):
+    def __init__(self, temperature_init=0.05, step_size=10, gamma_temperature=0.5, min_temperature=1e-4,
+                 boltzmann_const=1.):
         """
         :param temperature_init: initial temperature
         :param step_size: epoch steps
         :param gamma_temperature: temperature down-factor
         :param min_temperature: min temperature
+        :param boltzmann_const: Boltzmann's constant
         """
         self.temperature = temperature_init
         self.step_size = step_size
         self.gamma_temperature = gamma_temperature
         self.min_temperature = min_temperature
         self.last_epoch_update = -1
+        self.boltzmann_const = boltzmann_const
+
+    @property
+    def energy(self):
+        return self.temperature * self.boltzmann_const
 
     def need_update(self, epoch: int):
         return epoch >= self.last_epoch_update + self.step_size
@@ -49,15 +56,16 @@ class TemperatureScheduler:
         self.last_epoch_update = state_dict['last_epoch_update']
 
     def extra_repr(self):
-        return f"step_size={self.step_size}, gamma_flip={self.gamma_temperature}, min_flip={self.min_temperature}"
+        return f"step_size={self.step_size}, gamma_flip={self.gamma_temperature}, " \
+            f"min_flip={self.min_temperature}, boltzmann_const={self.boltzmann_const}"
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.extra_repr()})"
 
 
 class TemperatureSchedulerConstant(TemperatureScheduler):
-    def __init__(self, temperature: float):
-        super().__init__(temperature_init=temperature, min_temperature=temperature)
+    def __init__(self, temperature: float, boltzmann_const=1.):
+        super().__init__(temperature_init=temperature, min_temperature=temperature, boltzmann_const=boltzmann_const)
 
 
 class ParameterFlip(object):
@@ -136,7 +144,7 @@ class TrainerMCMC(Trainer):
         if loss_delta < 0:
             proba_accept = 1.0
         else:
-            proba_accept = math.exp(-loss_delta / self.temperature_scheduler.temperature)
+            proba_accept = math.exp(-loss_delta / self.temperature_scheduler.energy)
         return proba_accept
 
     def train_batch_mcmc(self, images, labels, named_params):
@@ -238,7 +246,7 @@ class TrainerMCMCGibbs(TrainerMCMC):
     def accept(self, loss_new: torch.Tensor, loss_old: torch.Tensor) -> float:
         loss_delta = (loss_old - loss_new).item()
         try:
-            proba_accept = 1 / (1 + math.exp(-loss_delta / self.temperature_scheduler.temperature))
+            proba_accept = 1 / (1 + math.exp(-loss_delta / self.temperature_scheduler.energy))
         except OverflowError:
             proba_accept = int(loss_delta > 0)
         return proba_accept
