@@ -14,6 +14,52 @@ from utils.common import get_data_loader
 from utils.layers import compile_inference, binarize_model
 
 
+class TemperatureScheduler:
+    """
+    Flip ratio (temperature) scheduler.
+    """
+
+    def __init__(self, temperature_init=0.05, step_size=10, gamma_temperature=0.5, min_temperature=1e-4):
+        """
+        :param temperature_init: initial temperature
+        :param step_size: epoch steps
+        :param gamma_temperature: temperature down-factor
+        :param min_temperature: min temperature
+        """
+        self.temperature = temperature_init
+        self.step_size = step_size
+        self.gamma_temperature = gamma_temperature
+        self.min_temperature = min_temperature
+        self.last_epoch_update = -1
+
+    def need_update(self, epoch: int):
+        return epoch >= self.last_epoch_update + self.step_size
+
+    def step(self, epoch: int):
+        if self.need_update(epoch):
+            self.temperature = max(self.temperature * self.gamma_temperature, self.min_temperature)
+            self.last_epoch_update = epoch
+
+    def state_dict(self):
+        return {
+            'last_epoch_update': self.last_epoch_update
+        }
+
+    def load_state_dict(self, state_dict: dict):
+        self.last_epoch_update = state_dict['last_epoch_update']
+
+    def extra_repr(self):
+        return f"step_size={self.step_size}, gamma_flip={self.gamma_temperature}, min_flip={self.min_temperature}"
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.extra_repr()})"
+
+
+class TemperatureSchedulerConstant(TemperatureScheduler):
+    def __init__(self, temperature: float):
+        super().__init__(temperature_init=temperature, min_temperature=temperature)
+
+
 class ParameterFlip(object):
     def __init__(self, name: str, param: nn.Parameter, source: torch.LongTensor, sink: torch.LongTensor):
         """
@@ -60,13 +106,13 @@ class ParameterFlipCached(ParameterFlip):
 
 
 class TrainerMCMC(Trainer):
-    def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str, flip_ratio=0.1, **kwargs):
+    def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str,
+                 temperature_scheduler=TemperatureScheduler(), **kwargs):
         model = binarize_model(model)
         compile_inference(model)
         super().__init__(model=model, criterion=criterion, dataset_name=dataset_name, **kwargs)
-        self.flip_ratio = flip_ratio
+        self.temperature_scheduler = temperature_scheduler
         self.accepted_count = 0
-        self.update_calls = 0
         for param in model.parameters():
             param.requires_grad_(False)
 
@@ -77,23 +123,20 @@ class TrainerMCMC(Trainer):
 
     def log_trainer(self):
         super().log_trainer()
-        self.monitor.log(f"Flip ratio: {self.flip_ratio}")
+        self.monitor.log(self.temperature_scheduler)
 
     def get_acceptance_ratio(self) -> float:
-        if self.update_calls == 0:
-            return 0
-        else:
-            return self.accepted_count / self.update_calls
+        return self.accepted_count / (self.timer.batch_id + 1)
 
     def neurons_to_flip(self, size: int) -> int:
-        return math.ceil(size * self.flip_ratio)
+        return math.ceil(size * self.temperature_scheduler.temperature)
 
     def accept(self, loss_new: torch.Tensor, loss_old: torch.Tensor) -> float:
         loss_delta = (loss_new - loss_old).item()
         if loss_delta < 0:
             proba_accept = 1.0
         else:
-            proba_accept = math.exp(-loss_delta / (self.flip_ratio * 1))
+            proba_accept = math.exp(-loss_delta / self.temperature_scheduler.temperature)
         return proba_accept
 
     def train_batch_mcmc(self, images, labels, named_params):
@@ -133,13 +176,17 @@ class TrainerMCMC(Trainer):
 
         del param_flips
 
-        self.update_calls += 1
         return outputs, loss
 
     def train_batch(self, images, labels):
         return self.train_batch_mcmc(images, labels, named_params=[
             random.choice(named_parameters_binary(self.model))
         ])
+
+    def _epoch_finished(self, epoch, outputs, labels):
+        loss = super()._epoch_finished(epoch=epoch, outputs=outputs, labels=labels)
+        self.temperature_scheduler.step(epoch=epoch)
+        return loss
 
     def monitor_functions(self):
         super().monitor_functions()
@@ -151,7 +198,16 @@ class TrainerMCMC(Trainer):
                 title='MCMC accepted / total_tries'
             ))
 
+        def temperature(viz):
+            viz.line_update(y=self.temperature_scheduler.temperature, opts=dict(
+                xlabel='Epoch',
+                ylabel='Temperature',
+                title='Surrounding temperature',
+                ytype='log',
+            ))
+
         self.monitor.register_func(acceptance_ratio)
+        self.monitor.register_func(temperature)
 
         if isinstance(self.criterion, LossFixedPattern):
             def show_fixed_patterns(viz):
@@ -182,7 +238,7 @@ class TrainerMCMCGibbs(TrainerMCMC):
     def accept(self, loss_new: torch.Tensor, loss_old: torch.Tensor) -> float:
         loss_delta = (loss_old - loss_new).item()
         try:
-            proba_accept = 1 / (1 + math.exp(-loss_delta / (self.flip_ratio * 1)))
+            proba_accept = 1 / (1 + math.exp(-loss_delta / self.temperature_scheduler.temperature))
         except OverflowError:
             proba_accept = int(loss_delta > 0)
         return proba_accept

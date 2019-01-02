@@ -81,13 +81,17 @@ class Trainer(ABC):
             "env_name": self.env_name,
         }
 
-    def restore(self, checkpoint_path=None, strict=True):
+    def restore(self, checkpoint_path=None, strict=True, restore_env=True):
         """
         :param checkpoint_path: train checkpoint path to restore
         :param strict: model's load_state_dict strict argument
+        :param restore_env: continue previous progress or open a new environment?
         """
         if checkpoint_path is None:
             checkpoint_path = self.checkpoint_path
+        checkpoint_path = Path(checkpoint_path)
+        if not checkpoint_path.is_absolute():
+            checkpoint_path = CHECKPOINTS_DIR / checkpoint_path
         if not checkpoint_path.exists():
             print(f"Checkpoint '{checkpoint_path}' doesn't exist. Nothing to restore.")
             return None
@@ -100,10 +104,15 @@ class Trainer(ABC):
         except RuntimeError as error:
             print(f"Error is occurred while restoring {checkpoint_path}: {error}")
             return None
-        self.env_name = checkpoint_state['env_name']
-        self.timer.set_epoch(checkpoint_state['epoch'])
+        if restore_env:
+            self.env_name = checkpoint_state['env_name']
+            self.timer.set_epoch(checkpoint_state['epoch'])
         self.monitor.open(env_name=self.env_name)
-        print(f"Restored model state from {checkpoint_path}.")
+        if not restore_env:
+            self.monitor.clear()
+        message = f"Restored model state from {checkpoint_path}."
+        print(message)
+        self.monitor.log(message)
         return checkpoint_state
 
     def _epoch_finished(self, epoch, outputs, labels):

@@ -33,10 +33,16 @@ class NetBinary(nn.Module):
         return x
 
 
-def train_gradient_full_precision(model: nn.Module, dataset_name="MNIST"):
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2, weight_decay=1e-4)
+def get_optimizer_scheduler(model: nn.Module):
+    optimizer = torch.optim.Adam(filter(lambda param: param.requires_grad, model.parameters()), lr=1e-3,
+                                 weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10,
                                                            threshold=1e-3, min_lr=1e-4)
+    return optimizer, scheduler
+
+
+def train_gradient_full_precision(model: nn.Module, dataset_name="MNIST"):
+    optimizer, scheduler = get_optimizer_scheduler(model)
     trainer = TrainerGrad(model,
                           criterion=nn.CrossEntropyLoss(),
                           dataset_name=dataset_name,
@@ -47,22 +53,18 @@ def train_gradient_full_precision(model: nn.Module, dataset_name="MNIST"):
 
 
 def train_gradient_binary(model: nn.Module, dataset_name="MNIST"):
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10,
-                                                           threshold=1e-3, min_lr=1e-4)
+    optimizer, scheduler = get_optimizer_scheduler(model)
     trainer = TrainerGradBinary(model,
                                 criterion=nn.CrossEntropyLoss(),
                                 dataset_name=dataset_name,
                                 optimizer=optimizer,
                                 scheduler=scheduler)
-    trainer.train(n_epoch=100)
+    trainer.train(n_epoch=100, mutual_info_layers=0)
     return model
 
 
 def train_binsoft(model: nn.Module, dataset_name="MNIST"):
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10,
-                                                           threshold=1e-3, min_lr=1e-4)
+    optimizer, scheduler = get_optimizer_scheduler(model)
     trainer = TrainerGradBinarySoft(model,
                                     criterion=nn.CrossEntropyLoss(),
                                     dataset_name=dataset_name,
@@ -76,15 +78,15 @@ def train_binsoft(model: nn.Module, dataset_name="MNIST"):
 def train_mcmc(model: nn.Module, dataset_name="MNIST"):
     trainer = TrainerMCMCGibbs(model,
                                criterion=nn.CrossEntropyLoss(),
-                               dataset_name=dataset_name,
-                               flip_ratio=0.01)
+                               dataset_name=dataset_name)
+    # trainer.restore("2019.01.02 NetBinary: MNIST TrainerGradBinary CrossEntropyLoss.pt", restore_env=False)
     trainer.train(n_epoch=100, mutual_info_layers=0)
     return model
 
 
 def train_tempering(model: nn.Module, dataset_name="MNIST"):
     trainer = ParallelTempering(model, criterion=nn.CrossEntropyLoss(), dataset_name=dataset_name,
-                                trainer_cls=TrainerMCMCGibbs, n_chains=5, monitor_kwargs=dict(watch_parameters=False))
+                                trainer_cls=TrainerMCMCGibbs, n_chains=5)
     trainer.train(n_epoch=100)
     return model
 
@@ -99,9 +101,8 @@ def set_seed(seed: int):
 
 if __name__ == '__main__':
     set_seed(seed=113)
-    # model = train_gradient(NetBinary(fc_sizes=(784, 10), batch_norm=True), is_binary=True, dataset_name="MNIST")
-    # model = train_mcmc(model=None, dataset_name="MNIST56FullSize")
-    # train_tempering(NetBinary(fc_sizes=(784, 10), batch_norm=False, scale_layer=False), dataset_name="MNIST")
-    # train_mcmc(NetBinary(fc_sizes=(784, 10), batch_norm=False, scale_layer=False), dataset_name="MNIST")
-    train_mcmc(NetBinary(fc_sizes=(25, 2), batch_norm=False, scale_layer=False), dataset_name="MNIST56")
+    # train_gradient_binary(NetBinary(fc_sizes=(784, 10), batch_norm=False),  dataset_name="MNIST")
+    train_mcmc(NetBinary(fc_sizes=(784, 10), batch_norm=False, scale_layer=False), dataset_name="MNIST")
+    # train_mcmc(NetBinary(fc_sizes=(25, 2), batch_norm=False, scale_layer=False), dataset_name="MNIST56")
     # train_binsoft(NetBinary((784, 10), batch_norm=False), dataset_name="MNIST")
+    # train_tempering(NetBinary(fc_sizes=(784, 10), batch_norm=False, scale_layer=False), dataset_name="MNIST")

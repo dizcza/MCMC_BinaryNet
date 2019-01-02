@@ -45,8 +45,7 @@ print(model_binary)
 
 trainer = TrainerMCMC(model_binary,
                       criterion=nn.CrossEntropyLoss(),
-                      dataset_name="MNIST",
-                      flip_ratio=0.1)  # flip how many signs of binary weights at MCMC step
+                      dataset_name="MNIST")
 trainer.train(n_epoch=100)
 # Training progress http://localhost:8097
 ```
