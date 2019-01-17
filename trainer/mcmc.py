@@ -8,6 +8,7 @@ import torch.utils.data
 
 from loss import LossFixedPattern
 from monitor.monitor_mcmc import MonitorMCMC
+from monitor.mutual_info.mutual_info import MutualInfo
 from trainer.trainer import Trainer
 from utils.binary_param import named_parameters_binary
 from utils.common import get_data_loader
@@ -124,9 +125,9 @@ class TrainerMCMC(Trainer):
         for param in model.parameters():
             param.requires_grad_(False)
 
-    def _init_monitor(self):
+    def _init_monitor(self, mutual_info: MutualInfo):
         monitor = MonitorMCMC(test_loader=get_data_loader(self.dataset_name, train=False),
-                              accuracy_measure=self.accuracy_measure, model=self.model)
+                              accuracy_measure=self.accuracy_measure, mutual_info=mutual_info, model=self.model)
         return monitor
 
     def log_trainer(self):
