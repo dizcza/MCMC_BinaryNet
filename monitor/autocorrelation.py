@@ -4,10 +4,9 @@ from typing import Iterable
 import numpy as np
 import torch
 import visdom
+from mighty.monitor.batch_timer import ScheduleStep
+from mighty.utils.common import clone_cpu
 from statsmodels.tsa.stattools import acf, ccf
-
-from monitor.batch_timer import ScheduleStep
-from utils.common import clone_cpu
 
 
 class Autocorrelation(object):

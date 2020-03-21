@@ -9,7 +9,7 @@ import torch
 import visdom
 import math
 
-from monitor.batch_timer import ScheduleStep, BatchTimer
+from mighty.monitor.batch_timer import ScheduleStep, BatchTimer
 
 
 class ParameterNode(object):

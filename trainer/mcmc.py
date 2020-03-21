@@ -5,13 +5,11 @@ import torch
 import torch.nn as nn
 import torch.utils.data
 import torch.utils.data
+from mighty.trainer.trainer import Trainer
+from mighty.utils.data import DataLoader, get_normalize_inverse
 
-from loss import LossFixedPattern
 from monitor.monitor_mcmc import MonitorMCMC
-from monitor.mutual_info.mutual_info import MutualInfo
-from trainer.trainer import Trainer
 from utils.binary_param import named_parameters_binary
-from utils.common import get_data_loader
 from utils.layers import compile_inference, binarize_model
 
 
@@ -84,8 +82,8 @@ class ParameterFlip(object):
         self.sink = sink
         self.is_flipped = False
 
-    def construct_flip(self) -> torch.ByteTensor:
-        idx_connection_flip = torch.ByteTensor(self.param.data.shape).fill_(0)
+    def construct_flip(self):
+        idx_connection_flip = torch.zeros(self.param.shape, dtype=torch.int32)
         idx_connection_flip[self.sink, self.source] = 1
         return idx_connection_flip
 
@@ -115,19 +113,24 @@ class ParameterFlipCached(ParameterFlip):
 
 
 class TrainerMCMC(Trainer):
-    def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str,
+    def __init__(self, model: nn.Module, criterion: nn.Module, data_loader: DataLoader,
                  temperature_scheduler=TemperatureScheduler(), **kwargs):
         model = binarize_model(model)
         compile_inference(model)
-        super().__init__(model=model, criterion=criterion, dataset_name=dataset_name, **kwargs)
+        super().__init__(model=model, criterion=criterion, data_loader=data_loader, **kwargs)
         self.temperature_scheduler = temperature_scheduler
         self.accepted_count = 0
         for param in model.parameters():
             param.requires_grad_(False)
 
-    def _init_monitor(self, mutual_info: MutualInfo):
-        monitor = MonitorMCMC(test_loader=get_data_loader(self.dataset_name, train=False),
-                              accuracy_measure=self.accuracy_measure, mutual_info=mutual_info, model=self.model)
+    def _init_monitor(self, mutual_info):
+        normalize_inverse = get_normalize_inverse(self.data_loader.normalize)
+        monitor = MonitorMCMC(
+            model=self.model,
+            accuracy_measure=self.accuracy_measure,
+            mutual_info=mutual_info,
+            normalize_inverse=normalize_inverse
+        )
         return monitor
 
     def log_trainer(self):
@@ -155,7 +158,7 @@ class TrainerMCMC(Trainer):
         param_flips = []
         source = None
         for name, param in named_params:
-            size_output, size_input = param.data.shape
+            size_output, size_input = param.shape
             sink = torch.randint(low=0, high=size_output, size=(self.neurons_to_flip(size_output), 1),
                                  device=param.device)
             if source is None:
@@ -217,20 +220,6 @@ class TrainerMCMC(Trainer):
 
         self.monitor.register_func(acceptance_ratio)
         self.monitor.register_func(temperature)
-
-        if isinstance(self.criterion, LossFixedPattern):
-            def show_fixed_patterns(viz):
-                labels = sorted(self.criterion.patterns.keys())
-                patterns = [self.criterion.patterns[label] for label in labels]
-                patterns = torch.stack(patterns, dim=0).cpu()
-                title = 'Fixed target patterns'
-                viz.heatmap(patterns, win=title, opts=dict(
-                    xlabel='Embedding dimension',
-                    ylabel='Label',
-                    title=title,
-                ))
-
-            self.monitor.register_func(show_fixed_patterns)
 
 
 class TrainerMCMCTree(TrainerMCMC):

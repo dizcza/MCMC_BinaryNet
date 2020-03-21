@@ -2,10 +2,12 @@ from typing import Union
 
 import torch.nn as nn
 import torch.utils.data
+from mighty.trainer.gradient import TrainerGrad
+from mighty.utils.common import find_layers
+from mighty.utils.data import DataLoader
 from torch.optim.lr_scheduler import _LRScheduler, ReduceLROnPlateau
 
-from trainer.gradient import TrainerGrad
-from utils.layers import BinaryDecoratorSoft, find_layers, binarize_model
+from utils.layers import BinaryDecoratorSoft, binarize_model
 
 
 class HardnessScheduler:
@@ -38,13 +40,13 @@ class HardnessScheduler:
 
 class TrainerGradBinarySoft(TrainerGrad):
 
-    def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str,
+    def __init__(self, model: nn.Module, criterion: nn.Module, data_loader: DataLoader,
                  optimizer: torch.optim.Optimizer,
                  scheduler: Union[_LRScheduler, ReduceLROnPlateau, None] = None,
                  hardness_scheduler: HardnessScheduler = None,
                  **kwargs):
         model = binarize_model(model, binarizer=BinaryDecoratorSoft)
-        super().__init__(model, criterion, dataset_name, optimizer=optimizer, scheduler=scheduler, **kwargs)
+        super().__init__(model, criterion, data_loader=data_loader, optimizer=optimizer, scheduler=scheduler, **kwargs)
         self.hardness_scheduler = hardness_scheduler
 
     def monitor_functions(self):

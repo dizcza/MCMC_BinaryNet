@@ -5,10 +5,12 @@ from collections import defaultdict
 
 import torch
 import torch.nn as nn
+from mighty.monitor.var_online import MeanOnline
+from mighty.trainer.trainer import Trainer
+from mighty.utils.data import DataLoader
 
-from monitor.var_online import MeanOnline
+
 from trainer.mcmc import TrainerMCMC, TemperatureSchedulerConstant
-from trainer.trainer import Trainer
 from utils.binary_param import named_parameters_binary
 from utils.layers import compile_inference, binarize_model
 
@@ -23,11 +25,11 @@ def clone_model(model: nn.Module) -> nn.Module:
 
 
 class ParallelTempering(Trainer):
-    def __init__(self, model: nn.Module, criterion: nn.Module, dataset_name: str, trainer_cls=TrainerMCMC,
+    def __init__(self, model: nn.Module, criterion: nn.Module, data_loader: DataLoader, trainer_cls=TrainerMCMC,
                  n_chains=5, **kwargs):
         model = binarize_model(model)
         compile_inference(model)
-        super().__init__(model=model, criterion=criterion, dataset_name=dataset_name, **kwargs)
+        super().__init__(model=model, criterion=criterion, data_loader=data_loader, **kwargs)
         temperature_min = 0.001
         temperature_max = 0.9
         temperature_multiplier = math.pow(temperature_max / temperature_min, 1 / (n_chains - 1))
@@ -37,7 +39,7 @@ class ParallelTempering(Trainer):
         for trainer_id in range(n_chains):
             temperature = temperature_min * temperature_multiplier ** trainer_id
             trainer = trainer_cls(model=clone_model(model), criterion=self.criterion,
-                                  dataset_name=self.dataset_name,
+                                  data_loader=data_loader,
                                   temperature_scheduler=TemperatureSchedulerConstant(temperature, boltzmann_const=10))
             self.trainers.append(trainer)
 

@@ -1,22 +1,19 @@
 import torch.nn as nn
-import torch.utils.data
+from mighty.monitor.accuracy import Accuracy
+from mighty.monitor.monitor import Monitor
 
-from monitor.accuracy import Accuracy
 from monitor.autocorrelation import Autocorrelation
 from monitor.graph import GraphMCMC
-from monitor.monitor import Monitor
-from monitor.mutual_info.mutual_info import MutualInfo
 from utils.binary_param import named_parameters_binary
-from utils.datasubset import DataSubset
 
 
 class MonitorMCMC(Monitor):
 
-    def __init__(self, test_loader: torch.utils.data.DataLoader, accuracy_measure: Accuracy, mutual_info: MutualInfo,
-                 model: nn.Module):
-        super().__init__(test_loader=test_loader, accuracy_measure=accuracy_measure, mutual_info=mutual_info)
-        self.autocorrelation = Autocorrelation(n_lags=self.timer.batches_in_epoch,
-                                               with_cross_correlation=isinstance(self.test_loader.dataset, DataSubset))
+    def __init__(self, model: nn.Module, accuracy_measure: Accuracy, mutual_info=None, normalize_inverse=None):
+        super().__init__(accuracy_measure=accuracy_measure,
+                         mutual_info=mutual_info,
+                         normalize_inverse=normalize_inverse)
+        self.autocorrelation = Autocorrelation(n_lags=self.timer.batches_in_epoch)
         named_param_shapes = iter((name, param.shape) for name, param in named_parameters_binary(model))
         self.graph_mcmc = GraphMCMC(named_param_shapes=named_param_shapes, timer=self.timer,
                                     history_heatmap=True)
@@ -29,7 +26,7 @@ class MonitorMCMC(Monitor):
         self.autocorrelation.add_samples(param_flips)
         self.graph_mcmc.add_samples(param_flips)
 
-    def epoch_finished(self, model: nn.Module, outputs_full, labels_full):
-        super().epoch_finished(model=model, outputs_full=outputs_full, labels_full=labels_full)
+    def epoch_finished(self, outputs, labels_true):
+        super().epoch_finished(outputs, labels_true)
         self.autocorrelation.plot(self.viz)
         # self.graph_mcmc.render(self.viz)

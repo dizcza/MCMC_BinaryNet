@@ -12,12 +12,16 @@ This repository demonstrates an alternative optimization of binary neural nets w
 
 Before running any experiment, make sure you've started the visdom server:
 
-`python3 -m visdom.server`
+`python3 -m visdom.server -port 8097`
 
 ```python
 import torch.nn as nn
-from utils.layers import binarize_model
+from mighty.utils.data import DataLoader
+from torchvision import transforms
+from torchvision.datasets import MNIST
+
 from trainer import TrainerMCMCGibbs
+from utils.layers import binarize_model
 
 class MLP(nn.Module):
     def __init__(self):
@@ -36,9 +40,12 @@ print(model_binary)
 #   (linear): [Binary]Linear(in_features=784, out_features=10, bias=False)
 # )
 
+normalize = transforms.Normalize(mean=(0.1307,), std=(0.3081,))
+data_loader = DataLoader(MNIST, normalize=normalize)
+
 trainer = TrainerMCMCGibbs(model_binary,
                            criterion=nn.CrossEntropyLoss(),
-                           dataset_name="MNIST")
+                           data_loader=data_loader)
 trainer.train(n_epoch=100)
 # Training progress http://localhost:8097
 ```

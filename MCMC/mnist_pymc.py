@@ -1,4 +1,5 @@
 import pickle
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -6,32 +7,39 @@ import pymc3 as pm
 import theano.tensor as tt
 import torch
 import torch.utils.data
+from mighty.utils.data import DataLoader
+from torchvision import transforms
+from torchvision.datasets import MNIST
 from tqdm import tqdm
 
-from utils.common import get_data_loader
-from utils.constants import DATA_DIR
+MCMC_DATA_DIR = Path(__file__).with_name("data")
+MCMC_DATA_DIR.mkdir(exist_ok=True)
 
-PYMC_MNIST_TRACE = DATA_DIR / "mnist_trace.pkl"
+PYMC_MNIST_TRACE = MCMC_DATA_DIR / "mnist_trace.pkl"
 
 
-def flatten_dataset(data_loader: torch.utils.data.DataLoader, take_first=float('inf')):
+def flatten_dataset(data_loader: torch.utils.data.DataLoader, n_samples=float('inf')):
     images_all, labels_all = [], []
     for images, labels in data_loader:
         images_all.append(images)
         labels_all.append(labels)
-        if len(labels_all) * data_loader.batch_size > take_first:
+        if len(labels_all) * data_loader.batch_size > n_samples:
             break
     images_all = torch.cat(images_all, dim=0)
     labels_all = torch.cat(labels_all, dim=0)
-    images_all = images_all.view(len(images_all), -1)
+    if n_samples != float('inf'):
+        images_all = images_all[:n_samples]
+        labels_all = labels_all[:n_samples]
+    images_all = images_all.flatten(start_dim=1)
     images_all = images_all.numpy()
     labels_all = labels_all.numpy()
     return images_all, labels_all
 
 
-def prepare_data(train=True, onehot=False, take_first=float('inf')):
-    loader = get_data_loader(dataset="MNIST", train=train)
-    x_data, y_data = flatten_dataset(data_loader=loader, take_first=take_first)
+def prepare_data(train=True, onehot=False, n_samples=float('inf')):
+    normalize = transforms.Normalize(mean=(0.1307,), std=(0.3081,))
+    train_loader = DataLoader(MNIST, normalize=normalize).get(train)
+    x_data, y_data = flatten_dataset(data_loader=train_loader, n_samples=n_samples)
     x_data = (x_data > 0).astype(np.float32)
     if onehot:
         n_samples = len(y_data)
@@ -83,13 +91,14 @@ def convergence_plot(trace=None, train=False):
     plt.ylabel('Accuracy')
     plt.title(f"Convergence plot, MNIST {'train' if train else 'test'}")
     plt.legend()
-    plt.savefig(DATA_DIR / f"pymc_mnist_{'train' if train else 'test'}.png")
+    plt.savefig(MCMC_DATA_DIR / f"pymc_mnist_{'train' if train else 'test'}.png")
     plt.show()
 
 
 def main(n_chains=3):
+    # tested on pymc3==3.8
     np.random.seed(113)
-    x_train, y_train_onehot = prepare_data(train=True, onehot=True, take_first=500)
+    x_train, y_train_onehot = prepare_data(train=True, onehot=True, n_samples=1000)
     print(f"Using {len(x_train)} train samples.")
     model = pm.Model()
     with model:
@@ -102,9 +111,9 @@ def main(n_chains=3):
             with open(PYMC_MNIST_TRACE, 'rb') as f:
                 trace = pickle.load(f)
             if trace.nchains != n_chains:
-                print(f"Reset previous progress {trace} to match n_chains={n_chains}")
+                print(f"Reset previous progress {trace} to match chains={n_chains}")
                 trace = None
-        trace = pm.sample(draws=3, njobs=1, chains=n_chains, tune=0, trace=trace)
+        trace = pm.sample(draws=3, chains=n_chains, tune=0, trace=trace)
     if trace.nchains == n_chains:
         # we didn't stop the training process
         with open(PYMC_MNIST_TRACE, 'wb') as f:
