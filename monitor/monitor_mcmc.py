@@ -26,7 +26,7 @@ class MonitorMCMC(Monitor):
         self.autocorrelation.add_samples(param_flips)
         self.graph_mcmc.add_samples(param_flips)
 
-    def epoch_finished(self, outputs, labels_true):
-        super().epoch_finished(outputs, labels_true)
+    def epoch_finished(self):
+        super().epoch_finished()
         self.autocorrelation.plot(self.viz)
         # self.graph_mcmc.render(self.viz)

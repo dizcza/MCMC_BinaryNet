@@ -195,10 +195,9 @@ class TrainerMCMC(Trainer):
             random.choice(named_parameters_binary(self.model))
         ])
 
-    def _epoch_finished(self, epoch, outputs, labels):
-        loss = super()._epoch_finished(epoch=epoch, outputs=outputs, labels=labels)
+    def _epoch_finished(self, epoch, loss):
+        super()._epoch_finished(epoch, loss)
         self.temperature_scheduler.step(epoch=epoch)
-        return loss
 
     def monitor_functions(self):
         super().monitor_functions()
