@@ -1,13 +1,13 @@
 import torch.nn as nn
 from mighty.monitor.accuracy import Accuracy
-from mighty.monitor.monitor import Monitor
+from mighty.monitor.monitor import MonitorEmbedding
 
 from monitor.autocorrelation import Autocorrelation
 from monitor.graph import GraphMCMC
 from utils.binary_param import named_parameters_binary
 
 
-class MonitorMCMC(Monitor):
+class MonitorMCMC(MonitorEmbedding):
 
     def __init__(self, model: nn.Module, accuracy_measure: Accuracy, mutual_info=None, normalize_inverse=None):
         super().__init__(accuracy_measure=accuracy_measure,

@@ -5,9 +5,12 @@ import torch
 import torch.nn as nn
 import torch.utils.data
 import torch.utils.data
-from mighty.trainer.trainer import Trainer
-from mighty.utils.data import DataLoader, get_normalize_inverse
 
+from mighty.trainer import TrainerGrad
+from mighty.utils.data import DataLoader
+from mighty.monitor.accuracy import AccuracyArgmax
+from mighty.monitor.mutual_info import MutualInfoKMeans
+from mighty.utils.stub import OptimizerStub
 from monitor.monitor_mcmc import MonitorMCMC
 from utils.binary_param import named_parameters_binary
 from utils.layers import compile_inference, binarize_model
@@ -33,18 +36,29 @@ class TemperatureScheduler:
         self.min_temperature = min_temperature
         self.last_epoch_update = -1
         self.boltzmann_const = boltzmann_const
+        self.epoch = 0
 
     @property
     def energy(self):
         return self.temperature * self.boltzmann_const
 
-    def need_update(self, epoch: int):
-        return epoch >= self.last_epoch_update + self.step_size
+    def need_update(self):
+        return self.epoch > 0 and self.epoch % self.step_size == 0
 
-    def step(self, epoch: int):
-        if self.need_update(epoch):
+    def step(self, epoch=None):
+        updated = False
+        if epoch:
+            self.epoch = epoch
+        else:
+            # this function is called just _before_ the completion of an epoch
+            # in the _epoch_finished() function
+            self.epoch += 1
+
+        if self.need_update():
             self.temperature = max(self.temperature * self.gamma_temperature, self.min_temperature)
             self.last_epoch_update = epoch
+            updated = True
+        return updated
 
     def state_dict(self):
         return {
@@ -112,24 +126,32 @@ class ParameterFlipCached(ParameterFlip):
         self.is_flipped = False
 
 
-class TrainerMCMC(Trainer):
-    def __init__(self, model: nn.Module, criterion: nn.Module, data_loader: DataLoader,
-                 temperature_scheduler=TemperatureScheduler(), **kwargs):
+class TrainerMCMC(TrainerGrad):
+    def __init__(self, model: nn.Module,
+                 criterion: nn.Module,
+                 data_loader: DataLoader,
+                 accuracy_measure=AccuracyArgmax(),
+                 temperature_scheduler=TemperatureScheduler(),
+                 **kwargs):
         model = binarize_model(model)
         compile_inference(model)
-        super().__init__(model=model, criterion=criterion, data_loader=data_loader, **kwargs)
+        super().__init__(model=model,
+                         criterion=criterion,
+                         data_loader=data_loader,
+                         optimizer=OptimizerStub(),
+                         accuracy_measure=accuracy_measure,
+                         **kwargs)
         self.temperature_scheduler = temperature_scheduler
         self.accepted_count = 0
         for param in model.parameters():
             param.requires_grad_(False)
 
     def _init_monitor(self, mutual_info):
-        normalize_inverse = get_normalize_inverse(self.data_loader.normalize)
         monitor = MonitorMCMC(
             model=self.model,
             accuracy_measure=self.accuracy_measure,
             mutual_info=mutual_info,
-            normalize_inverse=normalize_inverse
+            normalize_inverse=self.data_loader.normalize_inverse
         )
         return monitor
 
@@ -151,9 +173,10 @@ class TrainerMCMC(Trainer):
             proba_accept = math.exp(-loss_delta / self.temperature_scheduler.energy)
         return proba_accept
 
-    def train_batch_mcmc(self, images, labels, named_params):
+    def train_batch_mcmc(self, batch, named_params):
+        images, labels = batch
         outputs_orig = self.model(images)
-        loss_orig = self.criterion(outputs_orig, labels)
+        loss_orig = self._get_loss(batch=batch, output=outputs_orig)
 
         param_flips = []
         source = None
@@ -173,7 +196,7 @@ class TrainerMCMC(Trainer):
             pflip.flip()
 
         outputs = self.model(images)
-        loss = self.criterion(outputs, labels)
+        loss = self._get_loss(batch=batch, output=outputs)
         proba_accept = self.accept(loss_new=loss, loss_old=loss_orig)
         proba_draw = random.random()
         if proba_draw <= proba_accept:
@@ -182,22 +205,21 @@ class TrainerMCMC(Trainer):
             # reject
             for pflip in param_flips:
                 pflip.restore()
-            outputs = outputs_orig
             loss = loss_orig
         self.monitor.mcmc_step(param_flips)
 
         del param_flips
 
-        return outputs, loss
+        return loss
 
-    def train_batch(self, images, labels):
-        return self.train_batch_mcmc(images, labels, named_params=[
+    def train_batch(self, batch):
+        return self.train_batch_mcmc(batch, named_params=[
             random.choice(named_parameters_binary(self.model))
         ])
 
-    def _epoch_finished(self, epoch, loss):
-        super()._epoch_finished(epoch, loss)
-        self.temperature_scheduler.step(epoch=epoch)
+    def _epoch_finished(self, loss):
+        self.temperature_scheduler.step()
+        super()._epoch_finished(loss)
 
     def monitor_functions(self):
         super().monitor_functions()
@@ -223,8 +245,8 @@ class TrainerMCMC(Trainer):
 
 class TrainerMCMCTree(TrainerMCMC):
 
-    def train_batch(self, images, labels):
-        return self.train_batch_mcmc(images, labels, named_params=named_parameters_binary(self.model))
+    def train_batch(self, batch):
+        return self.train_batch_mcmc(batch, named_params=named_parameters_binary(self.model))
 
 
 class TrainerMCMCGibbs(TrainerMCMC):

@@ -20,19 +20,29 @@ class HardnessScheduler:
         self.step_size = step_size
         self.gamma_hardness = gamma_hardness
         self.max_hardness = max_hardness
-        self.last_epoch_update = -1
+        self.epoch = 0
 
-    def need_update(self, epoch: int):
-        return epoch >= self.last_epoch_update + self.step_size
+    def need_update(self):
+        return self.epoch > 0 and self.epoch % self.step_size == 0
 
     def step(self, epoch: int):
-        if self.need_update(epoch):
+        updated = False
+        if epoch:
+            self.epoch = epoch
+        else:
+            # this function is called just _before_ the completion of an epoch
+            # in the _epoch_finished() function
+            self.epoch += 1
+        if self.need_update():
             for layer in self.binsoft_layers:
                 layer.hardness = min(layer.hardness * self.gamma_hardness, self.max_hardness)
-            self.last_epoch_update = epoch
+            updated = True
+        return updated
 
     def extra_repr(self):
-        return f"step_size={self.step_size}, gamma_hardness={self.gamma_hardness}, max_hardness={self.max_hardness}"
+        return f"step_size={self.step_size}," \
+               f"Hardness(gamma={self.gamma_hardness}," \
+               f"max={self.max_hardness})"
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.extra_repr()})"
@@ -63,8 +73,7 @@ class TrainerGradBinarySoft(TrainerGrad):
         if self.hardness_scheduler is not None:
             self.monitor.register_func(hardness)
 
-    def _epoch_finished(self, epoch, outputs, labels):
-        loss = super()._epoch_finished(epoch, outputs, labels)
+    def _epoch_finished(self, loss):
+        super()._epoch_finished(loss)
         if self.hardness_scheduler is not None:
-            self.hardness_scheduler.step(epoch=epoch)
-        return loss
+            self.hardness_scheduler.step()

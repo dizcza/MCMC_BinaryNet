@@ -2,53 +2,40 @@
 
 This repository demonstrates an alternative optimization of binary neural nets with forward pass in mind only. No backward passes. No gradients. Instead, we use Metropolis-Hasting sampler to randomly select 1 % of weights (connections) in a binary network and flip them (multiply by `-1`). Then, we can accept or reject a new candidate (new model weights) at MCMC step, based on the loss and the surrounding `temperature` (which defines how many weights to flip). Convergence is obtained by freezing the model (temperature goes to zero). Loss plays a role of model state energy, and you're free to choose any conventional loss you might like: Cross-Entropy loss, Contrastive loss, Triplet loss, etc.
 
-## Requirements
-
-* Python 3.6+
-* [requirements.txt](requirements.txt)
-
 
 ## Quick start
 
-Before running any experiment, make sure you've started the visdom server:
+### Setup
 
-`python3 -m visdom.server -port 8097`
+* `pip3 install -r requirements.txt`
+* start visdom server with `python3 -m visdom.server -port 8097`
 
 ```python
 import torch.nn as nn
-from mighty.utils.data import DataLoader
-from torchvision import transforms
 from torchvision.datasets import MNIST
+from mighty.utils.data import DataLoader, TransformDefault
+from mighty.models import MLP
 
 from trainer import TrainerMCMCGibbs
-from utils.layers import binarize_model
 
-class MLP(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.linear = nn.Linear(28**2, 10, bias=False)
-    
-    def forward(self, x):
-        x = x.view(x.shape[0], -1)
-        x = self.linear(x)
-        return x
 
-model = MLP()
-model_binary = binarize_model(model)
-print(model_binary)
+model = MLP(784, 10)
 # MLP(
-#   (linear): [Binary]Linear(in_features=784, out_features=10, bias=False)
+#   (classifier): Sequential(
+#     (0): [Binary][Compiled]Linear(in_features=784, out_features=10, bias=False)
+#   )
 # )
 
-normalize = transforms.Normalize(mean=(0.1307,), std=(0.3081,))
-data_loader = DataLoader(MNIST, normalize=normalize)
-
-trainer = TrainerMCMCGibbs(model_binary,
+data_loader = DataLoader(MNIST, transform=TransformDefault.mnist())
+trainer = TrainerMCMCGibbs(model,
                            criterion=nn.CrossEntropyLoss(),
                            data_loader=data_loader)
-trainer.train(n_epoch=100)
+trainer.train(n_epochs=100, mutual_info_layers=0)
+
 # Training progress http://localhost:8097
 ```
+
+For more examples, refer to [main.py](main.py).
 
 ## Results
 

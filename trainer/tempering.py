@@ -52,8 +52,9 @@ class ParallelTempering(Trainer):
         self.monitor.log(f"Started {len(self.trainers)} {self.trainers[0].__class__.__name__} chains "
                          f"with such temperatures: {self.temperatures}")
 
-    def train_batch(self, images, labels):
-        best_outputs, best_loss = self.trainers[0].train_batch(images, labels)
+    def train_batch(self, batch):
+        images, labels = batch
+        best_outputs, best_loss = self.trainers[0].train_batch(batch)
         prev_loss = best_loss
         self.model = self.trainers[0].model
         for trainer_id in range(1, len(self.trainers)):

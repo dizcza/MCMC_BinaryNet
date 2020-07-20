@@ -1,40 +1,13 @@
-import os
-
-os.environ['FULL_FORWARD_PASS_SIZE'] = '10000'
-
 import torch
 import torch.nn as nn
 import torch.utils.data
 from torchvision.datasets import MNIST
-from torchvision import transforms
-from mighty.utils.data import DataLoader
+
+from mighty.models import MLP
 from mighty.monitor.monitor import MonitorLevel
-
+from mighty.monitor.mutual_info import *
+from mighty.utils.data import DataLoader, TransformDefault
 from trainer import *
-from utils.layers import ScaleLayer
-
-
-class NetBinary(nn.Module):
-    def __init__(self, fc_sizes, batch_norm=True, scale_layer=False):
-        super().__init__()
-        fc_layers = []
-        for (in_features, out_features) in zip(fc_sizes[:-1], fc_sizes[1:]):
-            fc_layers.append(nn.Linear(in_features, out_features, bias=False))
-            if batch_norm:
-                fc_layers.append(nn.BatchNorm1d(out_features))
-            fc_layers.append(nn.ReLU(inplace=True))
-        self.fc = nn.Sequential(*fc_layers)
-        if scale_layer:
-            self.scale_layer = ScaleLayer(size=fc_sizes[-1])
-        else:
-            self.scale_layer = None
-
-    def forward(self, x):
-        x = x.view(x.shape[0], -1)
-        x = self.fc(x)
-        if self.scale_layer is not None:
-            x = self.scale_layer(x)
-        return x
 
 
 def get_optimizer_scheduler(model: nn.Module):
@@ -46,9 +19,8 @@ def get_optimizer_scheduler(model: nn.Module):
 
 
 def train_gradient_full_precision(model: nn.Module, dataset_cls=MNIST):
+    data_loader = DataLoader(dataset_cls, transform=TransformDefault.mnist())
     optimizer, scheduler = get_optimizer_scheduler(model)
-    normalize = transforms.Normalize(mean=(0.1307,), std=(0.3081,))
-    data_loader = DataLoader(dataset_cls, normalize=normalize)
     trainer = TrainerGrad(model,
                           criterion=nn.CrossEntropyLoss(),
                           data_loader=data_loader,
@@ -56,57 +28,53 @@ def train_gradient_full_precision(model: nn.Module, dataset_cls=MNIST):
                           scheduler=scheduler)
     # trainer.restore()  # uncomment to restore the saved state
     trainer.monitor.advanced_monitoring(level=MonitorLevel.SIGNAL_TO_NOISE)
-    trainer.train(n_epoch=10, mutual_info_layers=2)
+    trainer.train(n_epochs=10, mutual_info_layers=2)
     return model
 
 
 def train_gradient_binary(model: nn.Module, dataset_cls=MNIST):
+    data_loader = DataLoader(dataset_cls, transform=TransformDefault.mnist())
     optimizer, scheduler = get_optimizer_scheduler(model)
-    normalize = transforms.Normalize(mean=(0.1307,), std=(0.3081,))
-    data_loader = DataLoader(dataset_cls, normalize=normalize)
     trainer = TrainerGradBinary(model,
                                 criterion=nn.CrossEntropyLoss(),
                                 data_loader=data_loader,
                                 optimizer=optimizer,
                                 scheduler=scheduler)
-    trainer.train(n_epoch=100, mutual_info_layers=0)
+    trainer.train(n_epochs=100, mutual_info_layers=0)
     return model
 
 
 def train_binsoft(model: nn.Module, dataset_cls=MNIST):
+    data_loader = DataLoader(dataset_cls, transform=TransformDefault.mnist())
     optimizer, scheduler = get_optimizer_scheduler(model)
-    normalize = transforms.Normalize(mean=(0.1307,), std=(0.3081,))
-    data_loader = DataLoader(dataset_cls, normalize=normalize)
     trainer = TrainerGradBinarySoft(model,
                                     criterion=nn.CrossEntropyLoss(),
                                     data_loader=data_loader,
                                     optimizer=optimizer,
                                     scheduler=scheduler,
                                     hardness_scheduler=HardnessScheduler(model=model, step_size=5))
-    trainer.train(n_epoch=100)
+    trainer.train(n_epochs=100)
     return model
 
 
 def train_mcmc(model: nn.Module, dataset_cls=MNIST):
-    normalize = transforms.Normalize(mean=(0.1307,), std=(0.3081,))
-    data_loader = DataLoader(dataset_cls, normalize=normalize)
+    data_loader = DataLoader(dataset_cls, transform=TransformDefault.mnist())
     trainer = TrainerMCMCGibbs(model,
                                criterion=nn.CrossEntropyLoss(),
+                               mutual_info=MutualInfoKMeans(data_loader),
                                data_loader=data_loader)
-    # trainer.restore("2019.01.02 NetBinary: MNIST TrainerGradBinary CrossEntropyLoss.pt", restore_env=False)
-    trainer.train(n_epoch=100, mutual_info_layers=0)
+    trainer.train(n_epochs=100, mutual_info_layers=1)
     return model
 
 
 def train_tempering(model: nn.Module, dataset_cls=MNIST):
-    normalize = transforms.Normalize(mean=(0.1307,), std=(0.3081,))
-    data_loader = DataLoader(dataset_cls, normalize=normalize)
+    data_loader = DataLoader(dataset_cls, transform=TransformDefault.mnist())
     trainer = ParallelTempering(model,
                                 criterion=nn.CrossEntropyLoss(),
                                 data_loader=data_loader,
                                 trainer_cls=TrainerMCMCGibbs,
                                 n_chains=5)
-    trainer.train(n_epoch=100)
+    trainer.train(n_epochs=100)
     return model
 
 
@@ -120,8 +88,7 @@ def set_seed(seed: int):
 
 if __name__ == '__main__':
     set_seed(seed=113)
-    # train_gradient_binary(NetBinary(fc_sizes=(784, 10), batch_norm=False))
-    train_mcmc(NetBinary(fc_sizes=(784, 10), batch_norm=False, scale_layer=False))
-    # train_mcmc(NetBinary(fc_sizes=(25, 2), batch_norm=False, scale_layer=False))
-    # train_binsoft(NetBinary((784, 10), batch_norm=False))
-    # train_tempering(NetBinary(fc_sizes=(784, 10), batch_norm=False, scale_layer=False))
+    # train_gradient_binary(NetBinary(fc_sizes=(784, 10)))
+    train_mcmc(MLP(784, 10))
+    # train_binsoft(MLP(784, 10))
+    # train_tempering(MLP(784, 10))
