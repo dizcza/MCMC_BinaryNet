@@ -9,5 +9,5 @@ scipy>=1.4.1
 graphviz>=0.13.2
 imageio>=2.8.0
 tqdm
-pytorch-mighty~=0.2.0
+pytorch-mighty~=0.2.1
 
