@@ -1,7 +1,6 @@
 import torch.nn as nn
-from mighty.monitor.accuracy import Accuracy
-from mighty.monitor.monitor import MonitorEmbedding
 
+from mighty.monitor.monitor import MonitorEmbedding
 from monitor.autocorrelation import Autocorrelation
 from monitor.graph import GraphMCMC
 from utils.binary_param import named_parameters_binary
@@ -9,9 +8,9 @@ from utils.binary_param import named_parameters_binary
 
 class MonitorMCMC(MonitorEmbedding):
 
-    def __init__(self, model: nn.Module, accuracy_measure: Accuracy, mutual_info=None, normalize_inverse=None):
-        super().__init__(accuracy_measure=accuracy_measure,
-                         mutual_info=mutual_info,
+    def __init__(self, model: nn.Module, mutual_info=None,
+                 normalize_inverse=None):
+        super().__init__(mutual_info=mutual_info,
                          normalize_inverse=normalize_inverse)
         self.autocorrelation = Autocorrelation(n_lags=self.timer.batches_in_epoch)
         named_param_shapes = iter((name, param.shape) for name, param in named_parameters_binary(model))
