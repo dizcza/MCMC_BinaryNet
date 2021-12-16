@@ -45,7 +45,7 @@ A snapshot of training binary MLP 784 -> 10 (binary weights and binary activatio
 
 More results:
 
-* Navigate to [http://85.217.171.57:8097/](http://85.217.171.57:8097/).  Give your browser a few minutes to parse the json data. Choose environments with `TrainerMCMC`. 
+* Navigate to http://visdom.kyivaigroup.com:8097/. Give your browser a few minutes to parse the json data. Choose environments with `TrainerMCMC`. 
 * For your local results, go to [http://localhost:8097](http://localhost:8097)
 * JAGS simulation in _R_: [paper](MCMC/paper.pdf), [source](MCMC/mnist56_jags.R)
 * PyMC3 simulation in Python: [readme](MCMC/README.md)
